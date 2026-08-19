@@ -1,0 +1,61 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+dist/
+out/
+bin/
+
+# Compiled binary artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.obj
+*.o
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Makefile
+ninja.log
+.ninja_deps
+.ninja_log
+
+# IDE & Editor artifacts
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln
+*.vcxproj*
+*.swp
+*.swo
+*~
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Logs & temporary files
+*.log
+*.tmp
+*.bak
+
+# OS specific files
+Thumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/

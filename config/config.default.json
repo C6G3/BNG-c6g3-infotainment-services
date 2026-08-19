@@ -1,0 +1,10 @@
+{
+    "server": {
+        "host": "127.0.0.1",
+        "port": 38123,
+        "heartbeat_interval_ms": 2500
+    },
+    "logging": {
+        "level": "INFO"
+    }
+}
