@@ -138,6 +138,23 @@ void WebSocketSession::onMessage(const std::string& message) {
                 }
             });
 
+        } else if (action == "CACHE_EXTERNAL_MEDIA") {
+            CacheMediaRequest req;
+            req.requestId  = json.value("requestId", "");
+            req.sourcePath = json.value("sourcePath", "");
+            req.targetDir  = json.value("targetDir", "");
+            req.filename   = json.value("filename", "");
+
+            Logger::instance().info("WebSocket", "Processing CACHE_EXTERNAL_MEDIA: src='{}', targetDir='{}', reqId='{}'",
+                                    req.sourcePath, req.targetDir, req.requestId);
+
+            // Execute file caching on background worker thread
+            resourceManager_.cacheExternalMediaAsync(req, [weakSelf = weak_from_this()](const CacheMediaResult& result) {
+                if (auto self = weakSelf.lock()) {
+                    self->send(result.toJson().dump());
+                }
+            });
+
         } else if (!action.empty()) {
             Logger::instance().debug("WebSocket", "Unknown action: {}", action);
         }

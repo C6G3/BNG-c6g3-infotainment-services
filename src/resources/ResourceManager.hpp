@@ -6,7 +6,7 @@
 
 namespace ifs {
 
-/// Manager for external resources and media scanning operations.
+/// Manager for external resources, media scanning, and caching operations.
 class ResourceManager {
 public:
     ResourceManager();
@@ -15,11 +15,17 @@ public:
     ResourceManager(const ResourceManager&)            = delete;
     ResourceManager& operator=(const ResourceManager&) = delete;
 
-    using ScanCallback = std::function<void(const ScanMediaResult&)>;
+    using ScanCallback  = std::function<void(const ScanMediaResult&)>;
+    using CacheCallback = std::function<void(const CacheMediaResult&)>;
 
     /// Scans external media asynchronously on a dedicated worker thread.
-    /// onComplete is invoked on the worker thread when the scan finishes.
     void scanExternalMediaAsync(const ScanMediaRequest& request, ScanCallback onComplete);
+
+    /// Caches an external media file to targetDir asynchronously on a worker thread.
+    void cacheExternalMediaAsync(const CacheMediaRequest& request, CacheCallback onComplete);
+
+    /// Synchronous caching implementation.
+    CacheMediaResult cacheMedia(const CacheMediaRequest& request);
 
 private:
     struct Impl;

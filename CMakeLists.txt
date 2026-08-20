@@ -48,4 +48,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 target_compile_options(${PROJECT_NAME} PRIVATE
     -Wall -Wextra -Wpedantic
+    -fno-var-tracking
+    -fno-var-tracking-assignments
+    --param=ggc-min-expand=20
+    --param=ggc-min-heapsize=32768
 )

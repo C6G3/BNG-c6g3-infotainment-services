@@ -73,4 +73,37 @@ struct ScanMediaResult {
     }
 };
 
+/// Parameters for CACHE_EXTERNAL_MEDIA request.
+struct CacheMediaRequest {
+    std::string requestId;
+    std::string sourcePath;
+    std::string targetDir;
+    std::string filename;
+};
+
+/// Result of CACHE_EXTERNAL_MEDIA operation.
+struct CacheMediaResult {
+    std::string requestId;
+    std::string status = "success"; // "success" or "error"
+    std::string filename;
+    std::string cachedPath;
+    std::string error;
+
+    nlohmann::json toJson() const {
+        nlohmann::json res = {
+            {"event",      "EXTERNAL_MEDIA_CACHED"},
+            {"requestId",  requestId},
+            {"status",     status},
+            {"filename",   filename},
+            {"cachedPath", cachedPath}
+        };
+
+        if (!error.empty()) {
+            res["error"] = error;
+        }
+
+        return res;
+    }
+};
+
 } // namespace ifs
