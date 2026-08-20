@@ -1,9 +1,12 @@
 #include "server/WebSocketSession.hpp"
 #include "server/ConnectionManager.hpp"
+#include "resources/ResourceManager.hpp"
+#include "resources/Resource.hpp"
 #include "core/Logger.hpp"
 #include "core/Types.hpp"
 
 #include <boost/beast/http/field.hpp>
+#include <boost/asio/post.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
 
@@ -15,9 +18,11 @@ namespace net       = boost::asio;
 namespace ifs {
 
 WebSocketSession::WebSocketSession(net::ip::tcp::socket socket,
-                                   ConnectionManager& manager)
+                                   ConnectionManager& manager,
+                                   ResourceManager& resourceManager)
     : ws_(std::move(socket))
-    , manager_(manager) {}
+    , manager_(manager)
+    , resourceManager_(resourceManager) {}
 
 WebSocketSession::~WebSocketSession() = default;
 
@@ -73,7 +78,6 @@ void WebSocketSession::doRead() {
 
 void WebSocketSession::onRead(beast::error_code ec, std::size_t /*bytes*/) {
     if (ec) {
-        // Normal close and shutdown cancellation are not errors
         if (ec != websocket::error::closed &&
             ec != net::error::operation_aborted) {
             Logger::instance().debug("WebSocket", "Read error: {}", ec.message());
@@ -109,6 +113,29 @@ void WebSocketSession::onMessage(const std::string& message) {
             };
             send(pong.dump());
 
+        } else if (action == "SCAN_EXTERNAL_MEDIA") {
+            ScanMediaRequest req;
+            req.requestId          = json.value("requestId", "");
+            req.targetPath         = json.value("targetPath", "");
+            req.outputThumbnailDir = json.value("outputThumbnailDir", "");
+
+            if (json.contains("mediaTypes") && json["mediaTypes"].is_array()) {
+                req.mediaTypes = json["mediaTypes"].get<std::vector<std::string>>();
+            }
+            if (json.contains("extensions") && json["extensions"].is_array()) {
+                req.extensions = json["extensions"].get<std::vector<std::string>>();
+            }
+
+            Logger::instance().info("WebSocket", "Received SCAN_EXTERNAL_MEDIA: target='{}', reqId='{}'",
+                                    req.targetPath, req.requestId);
+
+            // Execute scan on background worker thread
+            resourceManager_.scanExternalMediaAsync(req, [weakSelf = weak_from_this()](const ScanMediaResult& result) {
+                if (auto self = weakSelf.lock()) {
+                    self->send(result.toJson().dump());
+                }
+            });
+
         } else if (!action.empty()) {
             Logger::instance().debug("WebSocket", "Unknown action: {}", action);
         }
@@ -118,18 +145,21 @@ void WebSocketSession::onMessage(const std::string& message) {
     }
 }
 
-// ─── Writing (bounded queue, one async_write at a time) ──────────────────────
+// ─── Writing (thread-safe, bounded queue on io_context strand) ───────────────
 
 void WebSocketSession::send(const std::string& message) {
-    if (writeQueue_.size() >= MAX_QUEUE_SIZE) {
-        Logger::instance().warn("WebSocket", "Write queue full, dropping message");
-        return;
-    }
+    net::post(ws_.get_executor(), [self = shared_from_this(), message]() {
+        if (self->writeQueue_.size() >= MAX_QUEUE_SIZE) {
+            Logger::instance().warn("WebSocket", "Write queue full, dropping message");
+            return;
+        }
 
-    writeQueue_.push_back(message);
+        self->writeQueue_.push_back(message);
 
-    if (!writing_)
-        doWrite();
+        if (!self->writing_) {
+            self->doWrite();
+        }
+    });
 }
 
 void WebSocketSession::doWrite() {

@@ -38,7 +38,7 @@ namespace {
 // ─── Construction / Destruction ──────────────────────────────────────────────
 
 Application::Application()
-    : server_(std::make_unique<WebSocketServer>()) {}
+    : server_(std::make_unique<WebSocketServer>(resourceManager_)) {}
 
 Application::~Application() {
     shutdown();

@@ -344,24 +344,34 @@ It must be safe to delete and regenerate.
 
 ---
 
-# 7. Distribution Directory
+# 7. Distribution Directory & DLL Packaging
 
-`dist/` is for distributable builds.
+`dist/` is for distributable, plug-and-play standalone builds.
 
-Example:
+To comply cleanly with third-party open-source licenses (such as FFmpeg under LGPL) and to provide a zero-setup user experience, the service uses **portable dynamic linking**:
+
+* Third-party media libraries (e.g. FFmpeg `avformat-*.dll`, `avcodec-*.dll`, `avutil-*.dll`) are linked dynamically.
+* All required companion `.dll` files are packaged directly alongside `c6g3-infotainment-services.exe` in the distribution output folder.
+* Windows resolves DLLs from the application's own directory first, so end users do not need to install anything or modify system `PATH`.
+
+Example distribution structure:
 
 ```text
 dist/
 └── c6g3-infotainment-services/
     ├── c6g3-infotainment-services.exe
-    ├── required DLLs
+    ├── avformat-62.dll
+    ├── avcodec-62.dll
+    ├── avutil-60.dll
+    ├── (other required companion DLLs)
     ├── config/
+    │   └── config.default.json
     └── resources/
 ```
 
-`build/` is for developers.
+`build/` is for developers during active compilation.
 
-`dist/` is for packaging/release.
+`dist/` is for the self-contained, portable release package.
 
 Do not confuse the two.
 
@@ -632,6 +642,8 @@ The decoder should not know that BeamNG exists.
 # 16. FFmpeg Integration
 
 FFmpeg is the preferred candidate for general-purpose audio/video decoding unless a later technical evaluation establishes a better solution.
+
+FFmpeg must be **dynamically linked** as separate shared libraries (`.dll` files) rather than statically compiled into the executable. This maintains clear LGPL license compliance and allows modular updates.
 
 Keep FFmpeg behind project-level abstractions.
 

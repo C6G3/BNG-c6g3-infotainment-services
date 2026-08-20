@@ -8,11 +8,13 @@
 
 namespace ifs {
 
+class ResourceManager;
+
 /// WebSocket server built on Boost.Beast + Boost.Asio.
 /// All Beast/Asio types are hidden behind PIMPL.
 class WebSocketServer {
 public:
-    WebSocketServer();
+    explicit WebSocketServer(ResourceManager& resourceManager);
     ~WebSocketServer();
 
     WebSocketServer(const WebSocketServer&)            = delete;
@@ -31,8 +33,6 @@ public:
     std::size_t connectionCount() const;
 
     /// Start periodic heartbeat broadcasting.
-    /// @param interval  Time between heartbeats.
-    /// @param provider  Callback returning the heartbeat JSON string.
     using HeartbeatProvider = std::function<std::string()>;
     void startHeartbeat(std::chrono::milliseconds interval,
                         HeartbeatProvider provider);

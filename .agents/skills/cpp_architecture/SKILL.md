@@ -1267,7 +1267,7 @@ rather than global compiler/linker configuration where possible.
 
 ---
 
-# 51. CMake Target Design
+# 51. CMake Target Design & DLL Packaging
 
 Prefer one logical target per major component when useful.
 
@@ -1282,11 +1282,15 @@ c6g3-infotainment-services
 c6g3-infotainment-servicesTests
 ```
 
-Do not split targets prematurely.
+Do not split targets prematurely. A small project may initially use fewer targets. The goal is dependency clarity, not target-count maximization.
 
-A small project may initially use fewer targets.
+### Dynamic Linking & DLL Distribution Rule
 
-The goal is dependency clarity, not target-count maximization.
+For third-party multimedia and codec libraries (such as FFmpeg):
+
+* Use **dynamic linking** (`.dll` on Windows) rather than monolithic static linking.
+* **Licensing Compliance:** Dynamically linking to FFmpeg shared libraries (`avformat-*.dll`, `avcodec-*.dll`, `avutil-*.dll`) maintains clean LGPL compliance without requiring complex relinkable object distribution.
+* **Portable Distribution:** The final release package (`dist/`) should bundle the companion DLLs directly alongside `c6g3-infotainment-services.exe` so the application runs out-of-the-box without requiring users to install external packages or configure system `PATH`.
 
 ---
 

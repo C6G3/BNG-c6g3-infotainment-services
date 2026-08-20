@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/Config.hpp"
+#include "resources/ResourceManager.hpp"
 
 #include <memory>
 #include <atomic>
@@ -34,6 +35,7 @@ private:
     void setupSignalHandlers();
 
     Config                                config_;
+    ResourceManager                       resourceManager_;
     std::unique_ptr<WebSocketServer>      server_;
     std::chrono::steady_clock::time_point startTime_;
     std::atomic<bool>                     running_{false};
