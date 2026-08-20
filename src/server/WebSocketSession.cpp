@@ -91,6 +91,8 @@ void WebSocketSession::onRead(beast::error_code ec, std::size_t /*bytes*/) {
     std::string message = beast::buffers_to_string(buffer_.data());
     buffer_.consume(buffer_.size());
 
+    Logger::instance().debug("WebSocket", "[IN] {}", message);
+
     onMessage(message);
     doRead();
 }
@@ -126,7 +128,7 @@ void WebSocketSession::onMessage(const std::string& message) {
                 req.extensions = json["extensions"].get<std::vector<std::string>>();
             }
 
-            Logger::instance().info("WebSocket", "Received SCAN_EXTERNAL_MEDIA: target='{}', reqId='{}'",
+            Logger::instance().info("WebSocket", "Processing SCAN_EXTERNAL_MEDIA: target='{}', reqId='{}'",
                                     req.targetPath, req.requestId);
 
             // Execute scan on background worker thread
@@ -148,6 +150,8 @@ void WebSocketSession::onMessage(const std::string& message) {
 // ─── Writing (thread-safe, bounded queue on io_context strand) ───────────────
 
 void WebSocketSession::send(const std::string& message) {
+    Logger::instance().debug("WebSocket", "[OUT] {}", message);
+
     net::post(ws_.get_executor(), [self = shared_from_this(), message]() {
         if (self->writeQueue_.size() >= MAX_QUEUE_SIZE) {
             Logger::instance().warn("WebSocket", "Write queue full, dropping message");

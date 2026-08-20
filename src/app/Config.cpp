@@ -61,7 +61,7 @@ void Config::loadDefaults() {
     host_               = "127.0.0.1";
     port_               = 38123;
     heartbeatIntervalMs_ = 2500;
-    logLevel_           = "INFO";
+    logLevel_           = "DEBUG";
 
     Logger::instance().info("Config", "Using default configuration (ws://{}:{})",
                             host_, port_);

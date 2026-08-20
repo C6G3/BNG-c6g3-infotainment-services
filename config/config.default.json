@@ -5,6 +5,6 @@
         "heartbeat_interval_ms": 2500
     },
     "logging": {
-        "level": "INFO"
+        "level": "DEBUG"
     }
 }
