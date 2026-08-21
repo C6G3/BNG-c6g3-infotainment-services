@@ -94,20 +94,18 @@ struct ScanMediaResult {
             res["error"] = error;
         }
 
+        res["mediaType"] = primaryMediaType;
+        nlohmann::json itemArray = nlohmann::json::array();
         if (primaryMediaType == "image") {
-            res["mediaType"] = "image";
-            nlohmann::json itemArray = nlohmann::json::array();
             for (const auto& item : items) {
                 itemArray.push_back(item.toJson());
             }
-            res["items"] = itemArray;
         } else {
-            nlohmann::json trackArray = nlohmann::json::array();
             for (const auto& t : tracks) {
-                trackArray.push_back(t.toJson());
+                itemArray.push_back(t.toJson());
             }
-            res["tracks"] = trackArray;
         }
+        res["items"] = itemArray;
 
         return res;
     }
