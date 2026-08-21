@@ -635,6 +635,11 @@ FrameBuffer
 OutputAdapter
 ```
 
+## Resource & Thumbnail Naming Conventions
+
+* **Audio Covers:** Exact media stem naming (e.g., `SongName.mp3` $\rightarrow$ `SongName.jpg`). If no embedded cover art exists, `thumbnailFile` is empty `""`.
+* **Image Thumbnails:** Append `_thumb` suffix to stem (e.g., `cyberpunk_city.png` $\rightarrow$ `cyberpunk_city_thumb.png`, `photo.jpg` $\rightarrow$ `photo_thumb.jpg`). Thumbnails are scaled preserving aspect ratio up to `maxThumbnailWidth` $\times$ `maxThumbnailHeight`.
+
 The decoder should not know that BeamNG exists.
 
 ---
