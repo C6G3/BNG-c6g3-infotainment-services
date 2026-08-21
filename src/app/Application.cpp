@@ -50,10 +50,20 @@ Application::~Application() {
 bool Application::initialize(int argc, char* argv[]) {
     auto& log = Logger::instance();
 
-    // Determine config path (first arg or default)
-    std::filesystem::path configPath = "config/config.default.json";
-    if (argc > 1)
+    // Determine config path (first arg, CWD, or next to executable)
+    std::filesystem::path configPath;
+    if (argc > 1) {
         configPath = argv[1];
+    } else if (std::filesystem::exists("config/config.default.json")) {
+        configPath = "config/config.default.json";
+    } else {
+        std::filesystem::path exeDir = std::filesystem::path(argv[0]).parent_path();
+        if (!exeDir.empty() && std::filesystem::exists(exeDir / "config" / "config.default.json")) {
+            configPath = exeDir / "config" / "config.default.json";
+        } else {
+            configPath = "config/config.default.json";
+        }
+    }
 
     // Load configuration (logger is at INFO until config overrides it)
     config_.load(configPath);

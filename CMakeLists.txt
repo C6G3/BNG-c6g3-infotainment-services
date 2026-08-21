@@ -53,3 +53,41 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     --param=ggc-min-expand=20
     --param=ggc-min-heapsize=32768
 )
+
+# ─── Post-build: Copy config/ into build output directory ───────────────────
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/config
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/config
+    COMMENT "Bundling config/ to build output directory"
+)
+
+# ─── Dist Target: Package standalone release into dist/ ─────────────────────
+set(DIST_DIR ${CMAKE_SOURCE_DIR}/dist/${PROJECT_NAME})
+
+if(WIN32)
+    # Collect runtime DLLs for portable plug-and-play distribution on Windows
+    add_custom_target(dist
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/config ${DIST_DIR}/config
+        COMMAND ${CMAKE_COMMAND} -E copy
+            C:/msys64/ucrt64/bin/avformat-62.dll
+            C:/msys64/ucrt64/bin/avcodec-62.dll
+            C:/msys64/ucrt64/bin/avutil-60.dll
+            C:/msys64/ucrt64/bin/libwinpthread-1.dll
+            C:/msys64/ucrt64/bin/libstdc++-6.dll
+            C:/msys64/ucrt64/bin/libgcc_s_seh-1.dll
+            ${DIST_DIR}
+        COMMENT "Bundling standalone distribution in dist/${PROJECT_NAME}"
+        DEPENDS ${PROJECT_NAME}
+    )
+else()
+    add_custom_target(dist
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/config ${DIST_DIR}/config
+        COMMENT "Bundling standalone distribution in dist/${PROJECT_NAME}"
+        DEPENDS ${PROJECT_NAME}
+    )
+endif()
