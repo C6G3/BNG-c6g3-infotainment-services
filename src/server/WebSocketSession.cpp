@@ -146,9 +146,10 @@ void WebSocketSession::onMessage(const std::string& message) {
             req.sourcePath = json.value("sourcePath", "");
             req.targetDir  = json.value("targetDir", "");
             req.filename   = json.value("filename", "");
+            req.mediaType  = json.value("mediaType", "");
 
-            Logger::instance().info("WebSocket", "Processing CACHE_EXTERNAL_MEDIA: src='{}', targetDir='{}', reqId='{}'",
-                                    req.sourcePath, req.targetDir, req.requestId);
+            Logger::instance().info("WebSocket", "Processing CACHE_EXTERNAL_MEDIA: src='{}', targetDir='{}', mediaType='{}', reqId='{}'",
+                                    req.sourcePath, req.targetDir, req.mediaType, req.requestId);
 
             // Execute file caching on background worker thread
             resourceManager_.cacheExternalMediaAsync(req, [weakSelf = weak_from_this()](const CacheMediaResult& result) {

@@ -12,11 +12,15 @@ namespace ifs {
 
 namespace {
 
-std::string computeCachedPath(const std::string& targetDir, const std::string& filename) {
+std::string computeCachedPath(const std::string& targetDir, const std::string& filename, const std::string& mediaType) {
     std::string normalized = targetDir;
     std::replace(normalized.begin(), normalized.end(), '\\', '/');
     if (!normalized.empty() && normalized.back() != '/') {
         normalized.push_back('/');
+    }
+
+    if (mediaType == "image" || mediaType == "images" || mediaType == "picture" || mediaType == "pictures") {
+        return normalized + filename;
     }
 
     auto artPos = normalized.find("/art/");
@@ -79,7 +83,9 @@ void ResourceManager::scanExternalMediaAsync(const ScanMediaRequest& request, Sc
 
 CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request) {
     CacheMediaResult result;
-    result.requestId = request.requestId;
+    result.requestId  = request.requestId;
+    result.sourcePath = request.sourcePath;
+    result.mediaType  = request.mediaType;
 
     std::filesystem::path src(request.sourcePath);
     if (ShortcutResolver::isShortcut(src)) {
@@ -120,10 +126,10 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request) {
     }
 
     result.status     = "success";
-    result.cachedPath = computeCachedPath(request.targetDir, outFilename);
+    result.cachedPath = computeCachedPath(request.targetDir, outFilename, request.mediaType);
 
-    Logger::instance().info("ResourceManager", "Cached '{}' -> '{}' (virtual: '{}')",
-                            src.string(), dstFile.string(), result.cachedPath);
+    Logger::instance().info("ResourceManager", "Cached '{}' -> '{}' (mediaType='{}', cachedPath='{}')",
+                            src.string(), dstFile.string(), request.mediaType, result.cachedPath);
     return result;
 }
 

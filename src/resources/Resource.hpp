@@ -117,24 +117,35 @@ struct CacheMediaRequest {
     std::string sourcePath;
     std::string targetDir;
     std::string filename;
+    std::string mediaType; // "image", "audio", etc.
 };
 
 /// Result of CACHE_EXTERNAL_MEDIA operation.
 struct CacheMediaResult {
     std::string requestId;
     std::string status = "success"; // "success" or "error"
-    std::string filename;
+    std::string mediaType;
+    std::string sourcePath;
     std::string cachedPath;
+    std::string filename;
     std::string error;
 
     nlohmann::json toJson() const {
         nlohmann::json res = {
             {"event",      "EXTERNAL_MEDIA_CACHED"},
-            {"requestId",  requestId},
             {"status",     status},
-            {"filename",   filename},
-            {"cachedPath", cachedPath}
+            {"requestId",  requestId}
         };
+
+        if (!mediaType.empty()) {
+            res["mediaType"] = mediaType;
+        }
+        if (!sourcePath.empty()) {
+            res["sourcePath"] = sourcePath;
+        }
+
+        res["cachedPath"] = cachedPath;
+        res["filename"]   = filename;
 
         if (!error.empty()) {
             res["error"] = error;
