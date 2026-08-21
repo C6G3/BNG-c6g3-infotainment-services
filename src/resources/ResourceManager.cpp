@@ -12,15 +12,11 @@ namespace ifs {
 
 namespace {
 
-std::string computeCachedPath(const std::string& targetDir, const std::string& filename, const std::string& mediaType) {
+std::string computeCachedPath(const std::string& targetDir, const std::string& filename) {
     std::string normalized = targetDir;
     std::replace(normalized.begin(), normalized.end(), '\\', '/');
     if (!normalized.empty() && normalized.back() != '/') {
         normalized.push_back('/');
-    }
-
-    if (mediaType == "image" || mediaType == "images" || mediaType == "picture" || mediaType == "pictures") {
-        return normalized + filename;
     }
 
     auto artPos = normalized.find("/art/");
@@ -126,7 +122,7 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request) {
     }
 
     result.status     = "success";
-    result.cachedPath = computeCachedPath(request.targetDir, outFilename, request.mediaType);
+    result.cachedPath = computeCachedPath(request.targetDir, outFilename);
 
     Logger::instance().info("ResourceManager", "Cached '{}' -> '{}' (mediaType='{}', cachedPath='{}')",
                             src.string(), dstFile.string(), request.mediaType, result.cachedPath);
