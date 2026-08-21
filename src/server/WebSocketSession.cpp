@@ -120,6 +120,8 @@ void WebSocketSession::onMessage(const std::string& message) {
             req.requestId          = json.value("requestId", "");
             req.targetPath         = json.value("targetPath", "");
             req.outputThumbnailDir = json.value("outputThumbnailDir", "");
+            req.maxThumbnailWidth  = json.value("maxThumbnailWidth", 256);
+            req.maxThumbnailHeight = json.value("maxThumbnailHeight", 256);
 
             if (json.contains("mediaTypes") && json["mediaTypes"].is_array()) {
                 req.mediaTypes = json["mediaTypes"].get<std::vector<std::string>>();

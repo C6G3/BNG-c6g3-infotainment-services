@@ -13,6 +13,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libavformat
     libavcodec
+    libswscale
     libavutil
 )
 
@@ -32,6 +33,7 @@ add_executable(${PROJECT_NAME}
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    C:/msys64/ucrt64/include/stb
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -74,6 +76,7 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy
             C:/msys64/ucrt64/bin/avformat-62.dll
             C:/msys64/ucrt64/bin/avcodec-62.dll
+            C:/msys64/ucrt64/bin/swscale-9.dll
             C:/msys64/ucrt64/bin/avutil-60.dll
             C:/msys64/ucrt64/bin/libwinpthread-1.dll
             C:/msys64/ucrt64/bin/libstdc++-6.dll

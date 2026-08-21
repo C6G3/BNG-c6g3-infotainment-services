@@ -2,14 +2,27 @@
 #include "platform/windows/ShortcutResolver.hpp"
 #include "core/Logger.hpp"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb/stb_image.h>
+
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include <stb/stb_image_resize2.h>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb/stb_image_write.h>
+
 extern "C" {
 #include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
 #include <libavutil/dict.h>
+#include <libavutil/imgutils.h>
 }
 
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 
 namespace ifs {
 
@@ -33,14 +46,12 @@ std::string normalizeExtension(std::string_view ext) {
 }
 
 std::string cleanString(std::string str) {
-    // Trim leading and trailing whitespace
     while (!str.empty() && std::isspace(static_cast<unsigned char>(str.front()))) str.erase(0, 1);
     while (!str.empty() && std::isspace(static_cast<unsigned char>(str.back()))) str.pop_back();
     return str;
 }
 
 void parseFilenameFallback(const std::string& stem, std::string& outArtist, std::string& outTitle) {
-    // Check if filename is "Artist - Title"
     auto dashPos = stem.find(" - ");
     if (dashPos != std::string::npos) {
         outArtist = cleanString(stem.substr(0, dashPos));
@@ -64,9 +75,19 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
     result.requestId  = request.requestId;
     result.targetPath = request.targetPath;
 
+    // Determine mode: image vs audio
+    bool isImageMode = false;
+    for (const auto& t : request.mediaTypes) {
+        std::string lt = toLower(t);
+        if (lt == "image" || lt == "images" || lt == "picture" || lt == "pictures" || lt == "wallpaper" || lt == "wallpapers") {
+            isImageMode = true;
+            break;
+        }
+    }
+    result.primaryMediaType = isImageMode ? "image" : "audio";
+
     std::filesystem::path targetDir(request.targetPath);
     if (!std::filesystem::exists(targetDir)) {
-        // Try resolving if targetPath is a .lnk
         if (ShortcutResolver::isShortcut(targetDir)) {
             if (auto resolved = ShortcutResolver::resolve(targetDir)) {
                 targetDir = *resolved;
@@ -88,31 +109,41 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
 
     std::set<std::filesystem::path> visitedDirs;
     std::vector<AudioTrackInfo> tracks;
+    std::vector<ImageItemInfo> items;
 
     if (std::filesystem::is_directory(targetDir)) {
-        scanDirectory(targetDir, request, extensionsSet, visitedDirs, tracks);
+        scanDirectory(targetDir, request, isImageMode, extensionsSet, visitedDirs, tracks, items);
     } else if (std::filesystem::is_regular_file(targetDir)) {
-        processFile(targetDir, request, tracks);
+        if (isImageMode) {
+            processImageFile(targetDir, request, items);
+        } else {
+            processAudioFile(targetDir, request, tracks);
+        }
     }
 
     result.status = "success";
     result.tracks = std::move(tracks);
-    Logger::instance().info("MediaScanner", "Scan complete for '{}': found {} track(s)",
-                            request.targetPath, result.tracks.size());
+    result.items  = std::move(items);
+
+    size_t count = isImageMode ? result.items.size() : result.tracks.size();
+    Logger::instance().info("MediaScanner", "Scan complete for '{}' (mode={}): found {} item(s)",
+                            request.targetPath, result.primaryMediaType, count);
     return result;
 }
 
 void MediaScanner::scanDirectory(const std::filesystem::path& dir,
                                 const ScanMediaRequest& request,
+                                bool isImageMode,
                                 std::set<std::string>& extensionsSet,
                                 std::set<std::filesystem::path>& visitedDirs,
-                                std::vector<AudioTrackInfo>& outTracks) {
+                                std::vector<AudioTrackInfo>& outTracks,
+                                std::vector<ImageItemInfo>& outItems) {
     std::error_code ec;
     auto canonicalDir = std::filesystem::weakly_canonical(dir, ec);
     if (ec) canonicalDir = dir;
 
     if (visitedDirs.count(canonicalDir)) {
-        return; // Avoid cyclic loops
+        return;
     }
     visitedDirs.insert(canonicalDir);
 
@@ -125,11 +156,15 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
             if (ShortcutResolver::isShortcut(path)) {
                 if (auto resolved = ShortcutResolver::resolve(path)) {
                     if (std::filesystem::is_directory(*resolved)) {
-                        scanDirectory(*resolved, request, extensionsSet, visitedDirs, outTracks);
+                        scanDirectory(*resolved, request, isImageMode, extensionsSet, visitedDirs, outTracks, outItems);
                     } else if (std::filesystem::is_regular_file(*resolved)) {
                         auto ext = normalizeExtension(resolved->extension().string());
                         if (extensionsSet.empty() || extensionsSet.count(ext)) {
-                            processFile(*resolved, request, outTracks);
+                            if (isImageMode) {
+                                processImageFile(*resolved, request, outItems);
+                            } else {
+                                processAudioFile(*resolved, request, outTracks);
+                            }
                         }
                     }
                 }
@@ -137,11 +172,15 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
             }
 
             if (entry.is_directory(ec)) {
-                scanDirectory(path, request, extensionsSet, visitedDirs, outTracks);
+                scanDirectory(path, request, isImageMode, extensionsSet, visitedDirs, outTracks, outItems);
             } else if (entry.is_regular_file(ec)) {
                 auto ext = normalizeExtension(path.extension().string());
                 if (extensionsSet.empty() || extensionsSet.count(ext)) {
-                    processFile(path, request, outTracks);
+                    if (isImageMode) {
+                        processImageFile(path, request, outItems);
+                    } else {
+                        processAudioFile(path, request, outTracks);
+                    }
                 }
             }
         }
@@ -150,27 +189,28 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
     }
 }
 
-void MediaScanner::processFile(const std::filesystem::path& filePath,
-                               const ScanMediaRequest& request,
-                               std::vector<AudioTrackInfo>& outTracks) {
+// ─── Audio Processing ────────────────────────────────────────────────────────
+
+void MediaScanner::processAudioFile(const std::filesystem::path& filePath,
+                                    const ScanMediaRequest& request,
+                                    std::vector<AudioTrackInfo>& outTracks) {
     AudioTrackInfo track;
     track.mediaType = "audio";
     track.path      = normalizePathSeparators(filePath);
     track.filename  = filePath.filename().string();
 
     std::filesystem::path thumbDir(request.outputThumbnailDir);
-    extractMetadataAndCover(filePath, thumbDir, track);
+    extractAudioMetadataAndCover(filePath, thumbDir, track);
 
     outTracks.push_back(std::move(track));
 }
 
-bool MediaScanner::extractMetadataAndCover(const std::filesystem::path& filePath,
-                                           const std::filesystem::path& thumbnailDir,
-                                           AudioTrackInfo& outTrack) {
+bool MediaScanner::extractAudioMetadataAndCover(const std::filesystem::path& filePath,
+                                                const std::filesystem::path& thumbnailDir,
+                                                AudioTrackInfo& outTrack) {
     AVFormatContext* fmtCtx = nullptr;
     int ret = avformat_open_input(&fmtCtx, filePath.string().c_str(), nullptr, nullptr);
     if (ret < 0) {
-        // Fallback to basic filename parsing if FFmpeg cannot open container
         std::string stem = filePath.stem().string();
         parseFilenameFallback(stem, outTrack.artist, outTrack.title);
         outTrack.album         = "";
@@ -182,7 +222,6 @@ bool MediaScanner::extractMetadataAndCover(const std::filesystem::path& filePath
 
     avformat_find_stream_info(fmtCtx, nullptr);
 
-    // Read metadata tags
     auto getTag = [fmtCtx](const char* key) -> std::string {
         AVDictionaryEntry* entry = av_dict_get(fmtCtx->metadata, key, nullptr, AV_DICT_IGNORE_SUFFIX);
         if (entry && entry->value) {
@@ -211,14 +250,12 @@ bool MediaScanner::extractMetadataAndCover(const std::filesystem::path& filePath
     outTrack.album    = album;
     outTrack.category = genre.empty() ? "music" : genre;
 
-    // Search for embedded album art (attached pic)
     bool extractedCover = false;
     for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
         AVStream* st = fmtCtx->streams[i];
         if (st->disposition & AV_DISPOSITION_ATTACHED_PIC) {
             const AVPacket& pkt = st->attached_pic;
             if (pkt.data && pkt.size > 0) {
-                // Determine image format (JPEG vs PNG)
                 std::string imgExt = ".jpg";
                 if (pkt.size >= 4 &&
                     pkt.data[0] == 0x89 && pkt.data[1] == 'P' &&
@@ -226,7 +263,6 @@ bool MediaScanner::extractMetadataAndCover(const std::filesystem::path& filePath
                     imgExt = ".png";
                 }
 
-                // Per requirement: thumbnail uses exact base name of media file
                 std::string thumbFileName = stem + imgExt;
 
                 if (!thumbnailDir.empty()) {
@@ -246,7 +282,7 @@ bool MediaScanner::extractMetadataAndCover(const std::filesystem::path& filePath
                         Logger::instance().warn("MediaScanner", "Failed to write thumbnail: {}", destPath.string());
                     }
                 }
-                break; // First attached pic found
+                break;
             }
         }
     }
@@ -258,6 +294,172 @@ bool MediaScanner::extractMetadataAndCover(const std::filesystem::path& filePath
 
     avformat_close_input(&fmtCtx);
     return true;
+}
+
+// ─── Image Processing & Thumbnail Generation ─────────────────────────────────
+
+void MediaScanner::processImageFile(const std::filesystem::path& filePath,
+                                    const ScanMediaRequest& request,
+                                    std::vector<ImageItemInfo>& outItems) {
+    ImageItemInfo item;
+    item.mediaType = "image";
+    item.filename  = filePath.filename().string();
+    item.title     = filePath.stem().string();
+    item.path      = normalizePathSeparators(filePath);
+    item.format    = normalizeExtension(filePath.extension().string());
+
+    // Category defaults to parent directory name (e.g. "Wallpapers")
+    item.category = filePath.parent_path().filename().string();
+    if (item.category.empty()) {
+        item.category = "Images";
+    }
+
+    std::filesystem::path thumbDir(request.outputThumbnailDir);
+    int maxW = request.maxThumbnailWidth > 0 ? request.maxThumbnailWidth : 256;
+    int maxH = request.maxThumbnailHeight > 0 ? request.maxThumbnailHeight : 256;
+
+    extractAndGenerateImageThumbnail(filePath, thumbDir, maxW, maxH, item);
+
+    outItems.push_back(std::move(item));
+}
+
+bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path& filePath,
+                                                    const std::filesystem::path& thumbnailDir,
+                                                    int maxWidth,
+                                                    int maxHeight,
+                                                    ImageItemInfo& outItem) {
+    std::string stem = filePath.stem().string();
+    std::string ext  = outItem.format;
+    std::string thumbExt = (ext == "jpg" || ext == "jpeg") ? ".jpg" : ".png";
+    std::string thumbFileName = stem + "_thumb" + thumbExt;
+
+    // 1. Try stb_image first (very fast for PNG/JPG/BMP/TGA/GIF)
+    int origW = 0, origH = 0, channels = 0;
+    unsigned char* imgData = stbi_load(filePath.string().c_str(), &origW, &origH, &channels, 0);
+
+    if (imgData && origW > 0 && origH > 0 && channels > 0) {
+        outItem.width  = origW;
+        outItem.height = origH;
+
+        // Calculate aspect-ratio preserving dimensions
+        double scale = std::min(static_cast<double>(maxWidth) / origW,
+                                static_cast<double>(maxHeight) / origH);
+        if (scale > 1.0) scale = 1.0; // Do not upscale
+
+        int targetW = std::max(1, static_cast<int>(std::floor(origW * scale)));
+        int targetH = std::max(1, static_cast<int>(std::floor(origH * scale)));
+
+        if (!thumbnailDir.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(thumbnailDir, ec);
+
+            std::vector<unsigned char> resized(targetW * targetH * channels);
+            stbir_pixel_layout layout = (channels == 4) ? STBIR_RGBA :
+                                        (channels == 3) ? STBIR_RGB :
+                                        (channels == 2) ? STBIR_2CHANNEL : STBIR_1CHANNEL;
+
+            stbir_resize_uint8_linear(imgData, origW, origH, origW * channels,
+                                      resized.data(), targetW, targetH, targetW * channels,
+                                      layout);
+
+            std::filesystem::path destThumb = thumbnailDir / thumbFileName;
+            int writeSuccess = 0;
+            if (thumbExt == ".jpg") {
+                writeSuccess = stbi_write_jpg(destThumb.string().c_str(), targetW, targetH, channels, resized.data(), 85);
+            } else {
+                writeSuccess = stbi_write_png(destThumb.string().c_str(), targetW, targetH, channels, resized.data(), targetW * channels);
+            }
+
+            if (writeSuccess) {
+                outItem.thumbnailFile = thumbFileName;
+            } else {
+                Logger::instance().warn("MediaScanner", "Failed to write image thumbnail: {}", destThumb.string());
+                outItem.thumbnailFile = "";
+            }
+        }
+
+        stbi_image_free(imgData);
+        return true;
+    }
+
+    // 2. Fallback to FFmpeg (for WebP, DDS, HEIC, AVIF, TIFF, etc.)
+    AVFormatContext* fmtCtx = nullptr;
+    if (avformat_open_input(&fmtCtx, filePath.string().c_str(), nullptr, nullptr) >= 0) {
+        if (avformat_find_stream_info(fmtCtx, nullptr) >= 0 && fmtCtx->nb_streams > 0) {
+            int streamIdx = av_find_best_stream(fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+            if (streamIdx >= 0) {
+                AVCodecParameters* codecpar = fmtCtx->streams[streamIdx]->codecpar;
+                const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
+                if (decoder) {
+                    AVCodecContext* codecCtx = avcodec_alloc_context3(decoder);
+                    if (codecCtx) {
+                        avcodec_parameters_to_context(codecCtx, codecpar);
+                        if (avcodec_open2(codecCtx, decoder, nullptr) >= 0) {
+                            AVPacket* pkt   = av_packet_alloc();
+                            AVFrame*  frame = av_frame_alloc();
+                            bool frameDecoded = false;
+
+                            while (av_read_frame(fmtCtx, pkt) >= 0 && !frameDecoded) {
+                                if (pkt->stream_index == streamIdx) {
+                                    if (avcodec_send_packet(codecCtx, pkt) >= 0) {
+                                        if (avcodec_receive_frame(codecCtx, frame) >= 0) {
+                                            outItem.width  = frame->width;
+                                            outItem.height = frame->height;
+
+                                            double scale = std::min(static_cast<double>(maxWidth) / frame->width,
+                                                                    static_cast<double>(maxHeight) / frame->height);
+                                            if (scale > 1.0) scale = 1.0;
+
+                                            int targetW = std::max(1, static_cast<int>(std::floor(frame->width * scale)));
+                                            int targetH = std::max(1, static_cast<int>(std::floor(frame->height * scale)));
+
+                                            if (!thumbnailDir.empty()) {
+                                                std::error_code ec;
+                                                std::filesystem::create_directories(thumbnailDir, ec);
+
+                                                SwsContext* swsCtx = sws_getContext(
+                                                    frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                                                    targetW, targetH, AV_PIX_FMT_RGB24,
+                                                    SWS_BILINEAR, nullptr, nullptr, nullptr);
+
+                                                if (swsCtx) {
+                                                    std::vector<uint8_t> rgbBuf(targetW * targetH * 3);
+                                                    uint8_t* dstData[4] = { rgbBuf.data(), nullptr, nullptr, nullptr };
+                                                    int dstLinesize[4] = { targetW * 3, 0, 0, 0 };
+
+                                                    sws_scale(swsCtx, frame->data, frame->linesize, 0,
+                                                              frame->height, dstData, dstLinesize);
+                                                    sws_freeContext(swsCtx);
+
+                                                    std::filesystem::path destThumb = thumbnailDir / thumbFileName;
+                                                    if (stbi_write_png(destThumb.string().c_str(), targetW, targetH, 3, rgbBuf.data(), targetW * 3)) {
+                                                        outItem.thumbnailFile = thumbFileName;
+                                                    }
+                                                }
+                                            }
+                                            frameDecoded = true;
+                                        }
+                                    }
+                                }
+                                av_packet_unref(pkt);
+                            }
+
+                            av_frame_free(&frame);
+                            av_packet_free(&pkt);
+                        }
+                        avcodec_free_context(&codecCtx);
+                    }
+                }
+            }
+        }
+        avformat_close_input(&fmtCtx);
+        if (!outItem.thumbnailFile.empty() || outItem.width > 0) {
+            return true;
+        }
+    }
+
+    outItem.thumbnailFile = "";
+    return false;
 }
 
 } // namespace ifs

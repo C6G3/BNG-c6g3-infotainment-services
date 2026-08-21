@@ -8,7 +8,7 @@
 namespace ifs {
 
 /// Scanner that recursively scans directories, resolves shortcuts,
-/// and extracts metadata and embedded thumbnails from media files using FFmpeg.
+/// extracts audio metadata/covers and image thumbnails.
 class MediaScanner {
 public:
     MediaScanner() = default;
@@ -19,17 +19,29 @@ public:
 private:
     void scanDirectory(const std::filesystem::path& dir,
                        const ScanMediaRequest& request,
+                       bool isImageMode,
                        std::set<std::string>& extensionsSet,
                        std::set<std::filesystem::path>& visitedDirs,
-                       std::vector<AudioTrackInfo>& outTracks);
+                       std::vector<AudioTrackInfo>& outTracks,
+                       std::vector<ImageItemInfo>& outItems);
 
-    void processFile(const std::filesystem::path& filePath,
-                     const ScanMediaRequest& request,
-                     std::vector<AudioTrackInfo>& outTracks);
+    void processAudioFile(const std::filesystem::path& filePath,
+                          const ScanMediaRequest& request,
+                          std::vector<AudioTrackInfo>& outTracks);
 
-    bool extractMetadataAndCover(const std::filesystem::path& filePath,
-                                 const std::filesystem::path& thumbnailDir,
-                                 AudioTrackInfo& outTrack);
+    void processImageFile(const std::filesystem::path& filePath,
+                          const ScanMediaRequest& request,
+                          std::vector<ImageItemInfo>& outItems);
+
+    bool extractAudioMetadataAndCover(const std::filesystem::path& filePath,
+                                      const std::filesystem::path& thumbnailDir,
+                                      AudioTrackInfo& outTrack);
+
+    bool extractAndGenerateImageThumbnail(const std::filesystem::path& filePath,
+                                          const std::filesystem::path& thumbnailDir,
+                                          int maxWidth,
+                                          int maxHeight,
+                                          ImageItemInfo& outItem);
 };
 
 } // namespace ifs
