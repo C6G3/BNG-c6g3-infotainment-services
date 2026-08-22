@@ -65,6 +65,7 @@ struct ImageItemInfo {
 struct ScanMediaRequest {
     std::string requestId;
     std::string targetPath;
+    std::string category;
     std::vector<std::string> mediaTypes;
     std::vector<std::string> extensions;
     int maxThumbnailWidth = 256;

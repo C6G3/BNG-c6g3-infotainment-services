@@ -119,6 +119,7 @@ void WebSocketSession::onMessage(const std::string& message) {
             ScanMediaRequest req;
             req.requestId          = json.value("requestId", "");
             req.targetPath         = json.value("targetPath", "");
+            req.category           = json.value("category", "");
             req.outputThumbnailDir = json.value("outputThumbnailDir", "");
             req.maxThumbnailWidth  = json.value("maxThumbnailWidth", 256);
             req.maxThumbnailHeight = json.value("maxThumbnailHeight", 256);

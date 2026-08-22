@@ -114,6 +114,17 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
     if (std::filesystem::is_directory(targetDir)) {
         scanDirectory(targetDir, request, isImageMode, extensionsSet, visitedDirs, tracks, items);
     } else if (std::filesystem::is_regular_file(targetDir)) {
+        auto fileExt = normalizeExtension(targetDir.extension().string());
+        static const std::set<std::string> kImageExts = {"png", "jpg", "jpeg", "webp", "bmp", "dds", "tga", "tiff", "gif"};
+
+        if (!isImageMode && kImageExts.count(fileExt)) {
+            isImageMode = true;
+            result.primaryMediaType = "image";
+        }
+
+        Logger::instance().debug("MediaScanner", "Scanning single file: '{}' (mode={})",
+                                targetDir.string(), result.primaryMediaType);
+
         if (isImageMode) {
             processImageFile(targetDir, request, items);
         } else {
@@ -206,9 +217,13 @@ void MediaScanner::processAudioFile(const std::filesystem::path& filePath,
     std::filesystem::path thumbDir(request.outputThumbnailDir);
     extractAudioMetadataAndCover(filePath, thumbDir, track);
 
-    Logger::instance().debug("MediaScanner", "[Audio] Scanned '{}' (artist='{}', title='{}', album='{}', cover='{}')",
+    if (!request.category.empty()) {
+        track.category = request.category;
+    }
+
+    Logger::instance().debug("MediaScanner", "[Audio] Scanned '{}' (artist='{}', title='{}', album='{}', cover='{}', category='{}')",
                             track.filename, track.artist, track.title, track.album,
-                            track.thumbnailFile.empty() ? "none" : track.thumbnailFile);
+                            track.thumbnailFile.empty() ? "none" : track.thumbnailFile, track.category);
 
     outTracks.push_back(std::move(track));
 }
@@ -316,10 +331,14 @@ void MediaScanner::processImageFile(const std::filesystem::path& filePath,
     item.path      = normalizePathSeparators(filePath);
     item.format    = normalizeExtension(filePath.extension().string());
 
-    // Category defaults to parent directory name (e.g. "Wallpapers")
-    item.category = filePath.parent_path().filename().string();
-    if (item.category.empty()) {
-        item.category = "Images";
+    // Category: uses request.category if specified, otherwise parent folder name
+    if (!request.category.empty()) {
+        item.category = request.category;
+    } else {
+        item.category = filePath.parent_path().filename().string();
+        if (item.category.empty()) {
+            item.category = "Images";
+        }
     }
 
     std::filesystem::path thumbDir(request.outputThumbnailDir);
