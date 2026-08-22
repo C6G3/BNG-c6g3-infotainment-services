@@ -119,20 +119,22 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
         scanDirectory(targetDir, activeRequest, isImageMode, extensionsSet, visitedDirs, tracks, items);
     } else if (std::filesystem::is_regular_file(targetDir)) {
         auto fileExt = normalizeExtension(targetDir.extension().string());
-        static const std::set<std::string> kImageExts = {"png", "jpg", "jpeg", "webp", "bmp", "dds", "tga", "tiff", "gif"};
+        if (extensionsSet.empty() || extensionsSet.count(fileExt)) {
+            static const std::set<std::string> kImageExts = {"png", "jpg", "jpeg", "webp", "bmp", "dds", "tga", "tiff", "gif"};
 
-        if (!isImageMode && kImageExts.count(fileExt)) {
-            isImageMode = true;
-            result.primaryMediaType = "image";
-        }
+            if (!isImageMode && kImageExts.count(fileExt)) {
+                isImageMode = true;
+                result.primaryMediaType = "image";
+            }
 
-        Logger::instance().debug("MediaScanner", "Scanning single file: '{}' (mode={})",
-                                targetDir.string(), result.primaryMediaType);
+            Logger::instance().debug("MediaScanner", "Scanning single file: '{}' (mode={})",
+                                    targetDir.string(), result.primaryMediaType);
 
-        if (isImageMode) {
-            processImageFile(targetDir, activeRequest, items);
-        } else {
-            processAudioFile(targetDir, activeRequest, tracks);
+            if (isImageMode) {
+                processImageFile(targetDir, activeRequest, items);
+            } else {
+                processAudioFile(targetDir, activeRequest, tracks);
+            }
         }
     }
 
