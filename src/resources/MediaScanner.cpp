@@ -147,6 +147,8 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
     }
     visitedDirs.insert(canonicalDir);
 
+    Logger::instance().debug("MediaScanner", "Scanning directory: '{}'", dir.string());
+
     try {
         for (const auto& entry : std::filesystem::directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
             if (ec) continue;
@@ -155,6 +157,8 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
 
             if (ShortcutResolver::isShortcut(path)) {
                 if (auto resolved = ShortcutResolver::resolve(path)) {
+                    Logger::instance().debug("MediaScanner", "Resolved shortcut '{}' -> '{}'",
+                                            path.string(), resolved->string());
                     if (std::filesystem::is_directory(*resolved)) {
                         scanDirectory(*resolved, request, isImageMode, extensionsSet, visitedDirs, outTracks, outItems);
                     } else if (std::filesystem::is_regular_file(*resolved)) {
@@ -201,6 +205,10 @@ void MediaScanner::processAudioFile(const std::filesystem::path& filePath,
 
     std::filesystem::path thumbDir(request.outputThumbnailDir);
     extractAudioMetadataAndCover(filePath, thumbDir, track);
+
+    Logger::instance().debug("MediaScanner", "[Audio] Scanned '{}' (artist='{}', title='{}', album='{}', cover='{}')",
+                            track.filename, track.artist, track.title, track.album,
+                            track.thumbnailFile.empty() ? "none" : track.thumbnailFile);
 
     outTracks.push_back(std::move(track));
 }
@@ -320,6 +328,10 @@ void MediaScanner::processImageFile(const std::filesystem::path& filePath,
 
     extractAndGenerateImageThumbnail(filePath, thumbDir, maxW, maxH, item);
 
+    Logger::instance().debug("MediaScanner", "[Image] Scanned '{}' (dimensions: {}x{}, format='{}', thumb='{}', category='{}')",
+                            item.filename, item.width, item.height, item.format,
+                            item.thumbnailFile.empty() ? "none" : item.thumbnailFile, item.category);
+
     outItems.push_back(std::move(item));
 }
 
@@ -372,6 +384,8 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
 
             if (writeSuccess) {
                 outItem.thumbnailFile = thumbFileName;
+                Logger::instance().debug("MediaScanner", "[Image] Generated thumbnail for '{}' (orig: {}x{}, scaled: {}x{}) -> '{}'",
+                                        filePath.filename().string(), origW, origH, targetW, targetH, destThumb.string());
             } else {
                 Logger::instance().warn("MediaScanner", "Failed to write image thumbnail: {}", destThumb.string());
                 outItem.thumbnailFile = "";
@@ -434,6 +448,8 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
                                                     std::filesystem::path destThumb = thumbnailDir / thumbFileName;
                                                     if (stbi_write_png(destThumb.string().c_str(), targetW, targetH, 3, rgbBuf.data(), targetW * 3)) {
                                                         outItem.thumbnailFile = thumbFileName;
+                                                        Logger::instance().debug("MediaScanner", "[Image] Generated thumbnail via FFmpeg for '{}' (orig: {}x{}, scaled: {}x{}) -> '{}'",
+                                                                                filePath.filename().string(), frame->width, frame->height, targetW, targetH, destThumb.string());
                                                     }
                                                 }
                                             }
@@ -458,6 +474,7 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
         }
     }
 
+    Logger::instance().debug("MediaScanner", "[Image] Could not decode image or generate thumbnail for '{}'", filePath.string());
     outItem.thumbnailFile = "";
     return false;
 }

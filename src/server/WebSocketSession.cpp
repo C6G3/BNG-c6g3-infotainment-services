@@ -130,8 +130,14 @@ void WebSocketSession::onMessage(const std::string& message) {
                 req.extensions = json["extensions"].get<std::vector<std::string>>();
             }
 
-            Logger::instance().info("WebSocket", "Processing SCAN_EXTERNAL_MEDIA: target='{}', reqId='{}'",
-                                    req.targetPath, req.requestId);
+            std::string mediaTypesStr;
+            for (size_t i = 0; i < req.mediaTypes.size(); ++i) {
+                if (i > 0) mediaTypesStr += ", ";
+                mediaTypesStr += req.mediaTypes[i];
+            }
+
+            Logger::instance().info("WebSocket", "Processing SCAN_EXTERNAL_MEDIA: target='{}', mediaTypes=[{}], reqId='{}'",
+                                    req.targetPath, mediaTypesStr, req.requestId);
 
             // Execute scan on background worker thread
             resourceManager_.scanExternalMediaAsync(req, [weakSelf = weak_from_this()](const ScanMediaResult& result) {
