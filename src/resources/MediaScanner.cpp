@@ -86,12 +86,16 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
     }
     result.primaryMediaType = isImageMode ? "image" : "audio";
 
-    std::filesystem::path targetDir(request.targetPath);
-    if (!std::filesystem::exists(targetDir)) {
-        if (ShortcutResolver::isShortcut(targetDir)) {
-            if (auto resolved = ShortcutResolver::resolve(targetDir)) {
-                targetDir = *resolved;
-            }
+    std::filesystem::path rawTarget(request.targetPath);
+    ScanMediaRequest activeRequest = request;
+
+    std::filesystem::path targetDir = rawTarget;
+    if (ShortcutResolver::isShortcut(rawTarget)) {
+        if (activeRequest.category.empty()) {
+            activeRequest.category = rawTarget.stem().string();
+        }
+        if (auto resolved = ShortcutResolver::resolve(rawTarget)) {
+            targetDir = *resolved;
         }
     }
 
@@ -103,7 +107,7 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
     }
 
     std::set<std::string> extensionsSet;
-    for (const auto& ext : request.extensions) {
+    for (const auto& ext : activeRequest.extensions) {
         extensionsSet.insert(normalizeExtension(ext));
     }
 
@@ -112,7 +116,7 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
     std::vector<ImageItemInfo> items;
 
     if (std::filesystem::is_directory(targetDir)) {
-        scanDirectory(targetDir, request, isImageMode, extensionsSet, visitedDirs, tracks, items);
+        scanDirectory(targetDir, activeRequest, isImageMode, extensionsSet, visitedDirs, tracks, items);
     } else if (std::filesystem::is_regular_file(targetDir)) {
         auto fileExt = normalizeExtension(targetDir.extension().string());
         static const std::set<std::string> kImageExts = {"png", "jpg", "jpeg", "webp", "bmp", "dds", "tga", "tiff", "gif"};
@@ -126,9 +130,9 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request) {
                                 targetDir.string(), result.primaryMediaType);
 
         if (isImageMode) {
-            processImageFile(targetDir, request, items);
+            processImageFile(targetDir, activeRequest, items);
         } else {
-            processAudioFile(targetDir, request, tracks);
+            processAudioFile(targetDir, activeRequest, tracks);
         }
     }
 
@@ -170,15 +174,22 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
                 if (auto resolved = ShortcutResolver::resolve(path)) {
                     Logger::instance().debug("MediaScanner", "Resolved shortcut '{}' -> '{}'",
                                             path.string(), resolved->string());
+
+                    std::string shortcutCategory = path.stem().string();
+                    ScanMediaRequest subReq = request;
+                    if (subReq.category.empty()) {
+                        subReq.category = shortcutCategory;
+                    }
+
                     if (std::filesystem::is_directory(*resolved)) {
-                        scanDirectory(*resolved, request, isImageMode, extensionsSet, visitedDirs, outTracks, outItems);
+                        scanDirectory(*resolved, subReq, isImageMode, extensionsSet, visitedDirs, outTracks, outItems);
                     } else if (std::filesystem::is_regular_file(*resolved)) {
                         auto ext = normalizeExtension(resolved->extension().string());
                         if (extensionsSet.empty() || extensionsSet.count(ext)) {
                             if (isImageMode) {
-                                processImageFile(*resolved, request, outItems);
+                                processImageFile(*resolved, subReq, outItems);
                             } else {
-                                processAudioFile(*resolved, request, outTracks);
+                                processAudioFile(*resolved, subReq, outTracks);
                             }
                         }
                     }
