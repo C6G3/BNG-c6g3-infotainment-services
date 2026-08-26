@@ -36,8 +36,9 @@ std::string computeCachedPath(const std::string& targetDir, const std::string& f
 } // anonymous namespace
 
 struct ResourceManager::Impl {
-    MediaScanner scanner;
-    std::mutex   workersMutex;
+    MediaScanner   scanner;
+    ProgressConfig progressConfig;
+    std::mutex     workersMutex;
     std::vector<std::thread> workers;
 
     ~Impl() {
@@ -55,14 +56,29 @@ ResourceManager::ResourceManager()
 
 ResourceManager::~ResourceManager() = default;
 
+void ResourceManager::setProgressConfig(const ProgressConfig& config) {
+    std::lock_guard lock(impl_->workersMutex);
+    impl_->progressConfig = config;
+}
+
+const ProgressConfig& ResourceManager::getProgressConfig() const {
+    return impl_->progressConfig;
+}
+
 void ResourceManager::scanExternalMediaAsync(const ScanMediaRequest& request,
                                              ScanCallback onComplete,
                                              ProgressCallback onProgress) {
     Logger::instance().info("ResourceManager", "Starting async scan for request '{}' on target '{}'",
                             request.requestId, request.targetPath);
 
-    std::thread worker([this, request, onComplete = std::move(onComplete), onProgress = std::move(onProgress)]() {
-        ScanMediaResult result = impl_->scanner.scan(request, onProgress);
+    ProgressConfig cfg;
+    {
+        std::lock_guard lock(impl_->workersMutex);
+        cfg = impl_->progressConfig;
+    }
+
+    std::thread worker([this, request, onComplete = std::move(onComplete), onProgress = std::move(onProgress), cfg]() {
+        ScanMediaResult result = impl_->scanner.scan(request, onProgress, cfg);
         if (onComplete) {
             onComplete(result);
         }
@@ -118,8 +134,10 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request, P
     uint64_t totalBytes = std::filesystem::file_size(src, ec);
     if (ec) totalBytes = 0;
 
+    const bool shouldReportProgress = onProgress && (totalBytes >= impl_->progressConfig.minFileSizeBytes);
+
     // Report initial progress (0%)
-    if (onProgress) {
+    if (shouldReportProgress) {
         OperationProgress prog;
         prog.requestId = request.requestId;
         prog.action    = "COPYING";
@@ -159,7 +177,7 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request, P
             }
             copiedBytes += bytesRead;
 
-            if (onProgress && totalBytes > 0) {
+            if (shouldReportProgress && totalBytes > 0) {
                 double pct = (static_cast<double>(copiedBytes) / totalBytes) * 100.0;
                 if (pct - lastReportedPercent >= 5.0 || copiedBytes >= totalBytes) {
                     lastReportedPercent = pct;
@@ -180,7 +198,7 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request, P
     }
 
     // Report final progress (100%)
-    if (onProgress) {
+    if (shouldReportProgress) {
         OperationProgress prog;
         prog.requestId = request.requestId;
         prog.action    = "COPYING";

@@ -70,7 +70,9 @@ std::string normalizePathSeparators(const std::filesystem::path& path) {
 
 } // anonymous namespace
 
-ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request, ProgressCallback onProgress) {
+ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request,
+                                   ProgressCallback onProgress,
+                                   const ProgressConfig& progressConfig) {
     ScanMediaResult result;
     result.requestId  = request.requestId;
     result.targetPath = request.targetPath;
@@ -131,9 +133,10 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request, ProgressCall
     }
 
     const uint64_t totalCount = filesToProcess.size();
+    const bool shouldReportProgress = onProgress && (totalCount >= progressConfig.minScanItems);
 
     // Report discovery start progress
-    if (onProgress) {
+    if (shouldReportProgress) {
         OperationProgress prog;
         prog.requestId = activeRequest.requestId;
         prog.action    = "SCANNING";
@@ -156,7 +159,7 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request, ProgressCall
             processAudioFile(entry.path, entry.request, tracks);
         }
 
-        if (onProgress && totalCount > 0) {
+        if (shouldReportProgress && totalCount > 0) {
             uint64_t current = i + 1;
             double pct = (static_cast<double>(current) / totalCount) * 100.0;
             OperationProgress prog;

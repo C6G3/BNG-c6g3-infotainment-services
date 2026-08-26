@@ -43,10 +43,20 @@ bool Config::load(const std::filesystem::path& path) {
                 logLevel_ = logging["level"].get<std::string>();
         }
 
+        if (json.contains("progress")) {
+            auto& progress = json["progress"];
+            if (progress.contains("min_file_size_bytes"))
+                progressConfig_.minFileSizeBytes = progress["min_file_size_bytes"].get<uint64_t>();
+            if (progress.contains("min_scan_items"))
+                progressConfig_.minScanItems = progress["min_scan_items"].get<uint32_t>();
+        }
+
         log.info("Config", "Loaded configuration from {}", path.string());
         log.info("Config", "  Server: ws://{}:{}", host_, port_);
         log.info("Config", "  Heartbeat interval: {}ms", heartbeatIntervalMs_);
         log.info("Config", "  Log level: {}", logLevel_);
+        log.info("Config", "  Progress thresholds: min_file_size_bytes={}, min_scan_items={}",
+                 progressConfig_.minFileSizeBytes, progressConfig_.minScanItems);
 
         return true;
 
@@ -62,6 +72,7 @@ void Config::loadDefaults() {
     port_               = 38123;
     heartbeatIntervalMs_ = 2500;
     logLevel_           = "DEBUG";
+    progressConfig_     = ProgressConfig{};
 
     Logger::instance().info("Config", "Using default configuration (ws://{}:{})",
                             host_, port_);

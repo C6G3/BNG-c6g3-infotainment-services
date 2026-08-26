@@ -32,6 +32,12 @@ public:
     CacheMediaResult cacheMedia(const CacheMediaRequest& request,
                                 ProgressCallback onProgress = nullptr);
 
+    /// Sets progress reporting thresholds.
+    void setProgressConfig(const ProgressConfig& config);
+
+    /// Gets current progress reporting thresholds.
+    const ProgressConfig& getProgressConfig() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

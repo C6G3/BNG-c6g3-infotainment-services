@@ -6,5 +6,9 @@
     },
     "logging": {
         "level": "DEBUG"
+    },
+    "progress": {
+        "min_file_size_bytes": 1048576,
+        "min_scan_items": 3
     }
 }

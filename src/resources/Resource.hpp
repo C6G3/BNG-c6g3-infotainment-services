@@ -180,6 +180,12 @@ struct OperationProgress {
     }
 };
 
+/// Configuration settings controlling progress reporting thresholds.
+struct ProgressConfig {
+    uint64_t minFileSizeBytes = 1048576; // 1 MB default: files smaller than this won't trigger copy progress events
+    uint32_t minScanItems     = 3;       // Scans with fewer than this count won't trigger scan progress events
+};
+
 using ProgressCallback = std::function<void(const OperationProgress&)>;
 
 } // namespace ifs

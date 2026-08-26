@@ -14,7 +14,9 @@ public:
     MediaScanner() = default;
 
     /// Executes media scan synchronously. Called on worker thread.
-    ScanMediaResult scan(const ScanMediaRequest& request, ProgressCallback onProgress = nullptr);
+    ScanMediaResult scan(const ScanMediaRequest& request,
+                         ProgressCallback onProgress = nullptr,
+                         const ProgressConfig& progressConfig = {});
 
 private:
     struct FileEntry {

@@ -68,6 +68,7 @@ bool Application::initialize(int argc, char* argv[]) {
     // Load configuration (logger is at INFO until config overrides it)
     config_.load(configPath);
     log.setLevel(Logger::parseLevel(config_.getLogLevel()));
+    resourceManager_.setProgressConfig(config_.getProgressConfig());
 
     log.info("App", "{} v{} initializing...", SERVICE_NAME, SERVICE_VERSION);
 
