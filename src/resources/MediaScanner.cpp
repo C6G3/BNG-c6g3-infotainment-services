@@ -116,7 +116,19 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request, ProgressCall
     std::vector<ImageItemInfo> items;
 
     if (std::filesystem::is_directory(targetDir)) {
-        scanDirectory(targetDir, activeRequest, isImageMode, extensionsSet, visitedDirs, tracks, items, onProgress);
+        if (onProgress) {
+            OperationProgress prog;
+            prog.requestId = activeRequest.requestId;
+            prog.action    = "SCANNING";
+            prog.progress  = 0.0;
+            prog.current   = 0;
+            prog.total     = 0;
+            prog.unit      = "items";
+            prog.detail    = "Scanning " + targetDir.filename().string();
+            onProgress(prog);
+        }
+
+        scanDirectory(targetDir, activeRequest, isImageMode, extensionsSet, visitedDirs, tracks, items);
     } else if (std::filesystem::is_regular_file(targetDir)) {
         auto fileExt = normalizeExtension(targetDir.extension().string());
         if (extensionsSet.empty() || extensionsSet.count(fileExt)) {
@@ -135,18 +147,6 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request, ProgressCall
             } else {
                 processAudioFile(targetDir, activeRequest, tracks);
             }
-
-            if (onProgress) {
-                OperationProgress prog;
-                prog.requestId = activeRequest.requestId;
-                prog.action    = "SCANNING";
-                prog.progress  = 100.0;
-                prog.current   = 1;
-                prog.total     = 1;
-                prog.unit      = "items";
-                prog.detail    = targetDir.filename().string();
-                onProgress(prog);
-            }
         }
     }
 
@@ -155,6 +155,20 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request, ProgressCall
     result.items  = std::move(items);
 
     size_t count = isImageMode ? result.items.size() : result.tracks.size();
+
+    // Report final overall progress for the operation
+    if (onProgress) {
+        OperationProgress prog;
+        prog.requestId = activeRequest.requestId;
+        prog.action    = "SCANNING";
+        prog.progress  = 100.0;
+        prog.current   = count;
+        prog.total     = count;
+        prog.unit      = "items";
+        prog.detail    = "Scanned " + std::to_string(count) + " item(s)";
+        onProgress(prog);
+    }
+
     Logger::instance().info("MediaScanner", "Scan complete for '{}' (mode={}): found {} item(s)",
                             request.targetPath, result.primaryMediaType, count);
     return result;
@@ -166,8 +180,7 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
                                 std::set<std::string>& extensionsSet,
                                 std::set<std::filesystem::path>& visitedDirs,
                                 std::vector<AudioTrackInfo>& outTracks,
-                                std::vector<ImageItemInfo>& outItems,
-                                ProgressCallback onProgress) {
+                                std::vector<ImageItemInfo>& outItems) {
     std::error_code ec;
     auto canonicalDir = std::filesystem::weakly_canonical(dir, ec);
     if (ec) canonicalDir = dir;
@@ -197,7 +210,7 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
                     }
 
                     if (std::filesystem::is_directory(*resolved)) {
-                        scanDirectory(*resolved, subReq, isImageMode, extensionsSet, visitedDirs, outTracks, outItems, onProgress);
+                        scanDirectory(*resolved, subReq, isImageMode, extensionsSet, visitedDirs, outTracks, outItems);
                     } else if (std::filesystem::is_regular_file(*resolved)) {
                         auto ext = normalizeExtension(resolved->extension().string());
                         if (extensionsSet.empty() || extensionsSet.count(ext)) {
@@ -206,18 +219,6 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
                             } else {
                                 processAudioFile(*resolved, subReq, outTracks);
                             }
-
-                            if (onProgress) {
-                                size_t currentCount = isImageMode ? outItems.size() : outTracks.size();
-                                OperationProgress prog;
-                                prog.requestId = request.requestId;
-                                prog.action    = "SCANNING";
-                                prog.current   = currentCount;
-                                prog.total     = 0;
-                                prog.unit      = "items";
-                                prog.detail    = resolved->filename().string();
-                                onProgress(prog);
-                            }
                         }
                     }
                 }
@@ -225,7 +226,7 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
             }
 
             if (entry.is_directory(ec)) {
-                scanDirectory(path, request, isImageMode, extensionsSet, visitedDirs, outTracks, outItems, onProgress);
+                scanDirectory(path, request, isImageMode, extensionsSet, visitedDirs, outTracks, outItems);
             } else if (entry.is_regular_file(ec)) {
                 auto ext = normalizeExtension(path.extension().string());
                 if (extensionsSet.empty() || extensionsSet.count(ext)) {
@@ -233,18 +234,6 @@ void MediaScanner::scanDirectory(const std::filesystem::path& dir,
                         processImageFile(path, request, outItems);
                     } else {
                         processAudioFile(path, request, outTracks);
-                    }
-
-                    if (onProgress) {
-                        size_t currentCount = isImageMode ? outItems.size() : outTracks.size();
-                        OperationProgress prog;
-                        prog.requestId = request.requestId;
-                        prog.action    = "SCANNING";
-                        prog.current   = currentCount;
-                        prog.total     = 0;
-                        prog.unit      = "items";
-                        prog.detail    = path.filename().string();
-                        onProgress(prog);
                     }
                 }
             }

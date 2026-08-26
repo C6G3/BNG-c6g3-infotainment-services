@@ -23,8 +23,7 @@ private:
                        std::set<std::string>& extensionsSet,
                        std::set<std::filesystem::path>& visitedDirs,
                        std::vector<AudioTrackInfo>& outTracks,
-                       std::vector<ImageItemInfo>& outItems,
-                       ProgressCallback onProgress = nullptr);
+                       std::vector<ImageItemInfo>& outItems);
 
     void processAudioFile(const std::filesystem::path& filePath,
                           const ScanMediaRequest& request,
