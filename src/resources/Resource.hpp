@@ -156,4 +156,30 @@ struct CacheMediaResult {
     }
 };
 
+/// Progress event model for ongoing operations (copying, downloading, scanning).
+struct OperationProgress {
+    std::string requestId;
+    std::string action;    // e.g. "COPYING", "DOWNLOADING", "SCANNING", "PROCESSING"
+    double progress = 0.0; // 0.0 to 100.0
+    uint64_t current = 0;  // current bytes or items
+    uint64_t total = 0;    // total bytes or items (0 if unknown)
+    std::string unit = "bytes"; // "bytes" or "items"
+    std::string detail;    // current file name or subtask description
+
+    nlohmann::json toJson() const {
+        return {
+            {"event",     "OPERATION_PROGRESS"},
+            {"requestId", requestId},
+            {"action",    action},
+            {"progress",  std::round(progress * 10.0) / 10.0},
+            {"current",   current},
+            {"total",     total},
+            {"unit",      unit},
+            {"detail",    detail}
+        };
+    }
+};
+
+using ProgressCallback = std::function<void(const OperationProgress&)>;
+
 } // namespace ifs

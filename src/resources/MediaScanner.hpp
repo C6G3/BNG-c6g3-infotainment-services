@@ -14,7 +14,7 @@ public:
     MediaScanner() = default;
 
     /// Executes media scan synchronously. Called on worker thread.
-    ScanMediaResult scan(const ScanMediaRequest& request);
+    ScanMediaResult scan(const ScanMediaRequest& request, ProgressCallback onProgress = nullptr);
 
 private:
     void scanDirectory(const std::filesystem::path& dir,
@@ -23,7 +23,8 @@ private:
                        std::set<std::string>& extensionsSet,
                        std::set<std::filesystem::path>& visitedDirs,
                        std::vector<AudioTrackInfo>& outTracks,
-                       std::vector<ImageItemInfo>& outItems);
+                       std::vector<ImageItemInfo>& outItems,
+                       ProgressCallback onProgress = nullptr);
 
     void processAudioFile(const std::filesystem::path& filePath,
                           const ScanMediaRequest& request,

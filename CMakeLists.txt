@@ -56,6 +56,14 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     --param=ggc-min-heapsize=32768
 )
 
+if(WIN32 AND MINGW)
+    target_link_options(${PROJECT_NAME} PRIVATE
+        -static-libgcc
+        -static-libstdc++
+        -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
+    )
+endif()
+
 # ─── Post-build: Copy config/ into build output directory ───────────────────
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -68,7 +76,7 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 set(DIST_DIR ${CMAKE_SOURCE_DIR}/dist/${PROJECT_NAME})
 
 if(WIN32)
-    # Collect runtime DLLs for portable plug-and-play distribution on Windows
+    # Collect only FFmpeg runtime DLLs for portable distribution (compiler runtimes are statically linked)
     add_custom_target(dist
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${DIST_DIR}
@@ -78,9 +86,6 @@ if(WIN32)
             C:/msys64/ucrt64/bin/avcodec-62.dll
             C:/msys64/ucrt64/bin/swscale-9.dll
             C:/msys64/ucrt64/bin/avutil-60.dll
-            C:/msys64/ucrt64/bin/libwinpthread-1.dll
-            C:/msys64/ucrt64/bin/libstdc++-6.dll
-            C:/msys64/ucrt64/bin/libgcc_s_seh-1.dll
             ${DIST_DIR}
         COMMENT "Bundling standalone distribution in dist/${PROJECT_NAME}"
         DEPENDS ${PROJECT_NAME}

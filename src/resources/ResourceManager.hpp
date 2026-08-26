@@ -18,14 +18,19 @@ public:
     using ScanCallback  = std::function<void(const ScanMediaResult&)>;
     using CacheCallback = std::function<void(const CacheMediaResult&)>;
 
-    /// Scans external media asynchronously on a dedicated worker thread.
-    void scanExternalMediaAsync(const ScanMediaRequest& request, ScanCallback onComplete);
+    /// Scans external media asynchronously on a dedicated worker thread with optional progress reporting.
+    void scanExternalMediaAsync(const ScanMediaRequest& request,
+                                ScanCallback onComplete,
+                                ProgressCallback onProgress = nullptr);
 
-    /// Caches an external media file to targetDir asynchronously on a worker thread.
-    void cacheExternalMediaAsync(const CacheMediaRequest& request, CacheCallback onComplete);
+    /// Caches an external media file to targetDir asynchronously on a worker thread with optional progress reporting.
+    void cacheExternalMediaAsync(const CacheMediaRequest& request,
+                                 CacheCallback onComplete,
+                                 ProgressCallback onProgress = nullptr);
 
-    /// Synchronous caching implementation.
-    CacheMediaResult cacheMedia(const CacheMediaRequest& request);
+    /// Synchronous caching implementation with optional progress reporting.
+    CacheMediaResult cacheMedia(const CacheMediaRequest& request,
+                                ProgressCallback onProgress = nullptr);
 
 private:
     struct Impl;

@@ -7,6 +7,7 @@
 #include <mutex>
 #include <vector>
 #include <algorithm>
+#include <fstream>
 
 namespace ifs {
 
@@ -54,12 +55,14 @@ ResourceManager::ResourceManager()
 
 ResourceManager::~ResourceManager() = default;
 
-void ResourceManager::scanExternalMediaAsync(const ScanMediaRequest& request, ScanCallback onComplete) {
+void ResourceManager::scanExternalMediaAsync(const ScanMediaRequest& request,
+                                             ScanCallback onComplete,
+                                             ProgressCallback onProgress) {
     Logger::instance().info("ResourceManager", "Starting async scan for request '{}' on target '{}'",
                             request.requestId, request.targetPath);
 
-    std::thread worker([this, request, onComplete = std::move(onComplete)]() {
-        ScanMediaResult result = impl_->scanner.scan(request);
+    std::thread worker([this, request, onComplete = std::move(onComplete), onProgress = std::move(onProgress)]() {
+        ScanMediaResult result = impl_->scanner.scan(request, onProgress);
         if (onComplete) {
             onComplete(result);
         }
@@ -77,7 +80,7 @@ void ResourceManager::scanExternalMediaAsync(const ScanMediaRequest& request, Sc
     impl_->workers.push_back(std::move(worker));
 }
 
-CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request) {
+CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request, ProgressCallback onProgress) {
     CacheMediaResult result;
     result.requestId  = request.requestId;
     result.sourcePath = request.sourcePath;
@@ -112,13 +115,81 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request) {
     }
 
     std::filesystem::path dstFile = dstDir / outFilename;
-    std::filesystem::copy_file(src, dstFile, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-        Logger::instance().error("ResourceManager", "Failed to copy '{}' to '{}': {}",
-                                 src.string(), dstFile.string(), ec.message());
-        result.status = "error";
-        result.error  = "Failed to copy file: " + ec.message();
-        return result;
+    uint64_t totalBytes = std::filesystem::file_size(src, ec);
+    if (ec) totalBytes = 0;
+
+    // Report initial progress (0%)
+    if (onProgress) {
+        OperationProgress prog;
+        prog.requestId = request.requestId;
+        prog.action    = "COPYING";
+        prog.progress  = 0.0;
+        prog.current   = 0;
+        prog.total     = totalBytes;
+        prog.unit      = "bytes";
+        prog.detail    = outFilename;
+        onProgress(prog);
+    }
+
+    std::ifstream in(src, std::ios::binary);
+    std::ofstream out(dstFile, std::ios::binary | std::ios::trunc);
+    if (!in.is_open() || !out.is_open()) {
+        // Fallback to std::filesystem::copy_file if streams fail
+        std::filesystem::copy_file(src, dstFile, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            Logger::instance().error("ResourceManager", "Failed to copy '{}' to '{}': {}",
+                                     src.string(), dstFile.string(), ec.message());
+            result.status = "error";
+            result.error  = "Failed to copy file: " + ec.message();
+            return result;
+        }
+    } else {
+        constexpr size_t kChunkSize = 256 * 1024; // 256 KB buffer chunks
+        std::vector<char> buffer(kChunkSize);
+        uint64_t copiedBytes = 0;
+        double lastReportedPercent = 0.0;
+
+        while (in.read(buffer.data(), buffer.size()) || in.gcount() > 0) {
+            std::streamsize bytesRead = in.gcount();
+            out.write(buffer.data(), bytesRead);
+            if (!out) {
+                result.status = "error";
+                result.error  = "Write error during file copy";
+                return result;
+            }
+            copiedBytes += bytesRead;
+
+            if (onProgress && totalBytes > 0) {
+                double pct = (static_cast<double>(copiedBytes) / totalBytes) * 100.0;
+                if (pct - lastReportedPercent >= 5.0 || copiedBytes >= totalBytes) {
+                    lastReportedPercent = pct;
+                    OperationProgress prog;
+                    prog.requestId = request.requestId;
+                    prog.action    = "COPYING";
+                    prog.progress  = std::min(100.0, pct);
+                    prog.current   = copiedBytes;
+                    prog.total     = totalBytes;
+                    prog.unit      = "bytes";
+                    prog.detail    = outFilename;
+                    onProgress(prog);
+                }
+            }
+        }
+        in.close();
+        out.close();
+    }
+
+    // Report final progress (100%)
+    if (onProgress) {
+        OperationProgress prog;
+        prog.requestId = request.requestId;
+        prog.action    = "COPYING";
+        prog.progress  = 100.0;
+        prog.current   = totalBytes;
+        prog.total     = totalBytes;
+        prog.unit      = "bytes";
+        prog.detail    = outFilename;
+        onProgress(prog);
     }
 
     result.status     = "success";
@@ -129,12 +200,14 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request) {
     return result;
 }
 
-void ResourceManager::cacheExternalMediaAsync(const CacheMediaRequest& request, CacheCallback onComplete) {
+void ResourceManager::cacheExternalMediaAsync(const CacheMediaRequest& request,
+                                              CacheCallback onComplete,
+                                              ProgressCallback onProgress) {
     Logger::instance().info("ResourceManager", "Starting async cache for request '{}' from '{}'",
                             request.requestId, request.sourcePath);
 
-    std::thread worker([this, request, onComplete = std::move(onComplete)]() {
-        CacheMediaResult result = cacheMedia(request);
+    std::thread worker([this, request, onComplete = std::move(onComplete), onProgress = std::move(onProgress)]() {
+        CacheMediaResult result = cacheMedia(request, onProgress);
         if (onComplete) {
             onComplete(result);
         }

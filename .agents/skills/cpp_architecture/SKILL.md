@@ -1925,3 +1925,33 @@ future clients and integrations
 The long-term goal is not merely to make BeamNG play media it otherwise cannot play.
 
 The goal is to build a reliable **local media and integration bridge** whose first and most important client happens to be BeamNG.
+
+---
+
+# 81. Progress WebSocket Payload Integration
+
+All long-running, streaming, or chunked data operations (filesystem caching/copying, downloading, large directory scanning, transcoding, or buffering) **MUST** implement progress reporting:
+
+* **Progress Model:** Provide a `ProgressCallback` (`std::function<void(const OperationProgress&)>`) to async handlers.
+* **WebSocket Event:** Dispatch `OPERATION_PROGRESS` events over the client's `WebSocketSession`.
+* **Payload Format:**
+  ```json
+  {
+    "event": "OPERATION_PROGRESS",
+    "requestId": "<originating-request-id>",
+    "action": "COPYING" | "DOWNLOADING" | "SCANNING" | "PROCESSING",
+    "progress": 50.0,
+    "current": 5242880,
+    "total": 10485760,
+    "unit": "bytes" | "items",
+    "detail": "<filename-or-step-description>"
+  }
+  ```
+
+---
+
+# 82. Binary Packaging & DLL Minimization Policy
+
+* **Static Compiler Runtimes:** All MinGW/GCC runtime libraries (`libgcc_s_seh`, `libstdc++`, `libwinpthread`) **MUST** be statically linked into the main executable using `-static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic`.
+* **DLL Minimization:** Standalone distribution (`dist/`) **MUST ONLY** bundle external dynamic runtime dependencies (specifically FFmpeg `avformat`, `avcodec`, `avutil`, `swscale`, `swresample`). Never ship compiler runtime DLLs.
+

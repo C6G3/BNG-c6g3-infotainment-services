@@ -1575,26 +1575,41 @@ It should describe stable architectural decisions.
 
 ---
 
-# 49. Guiding Principle
+# 50. Progress WebSocket Event Standard (`OPERATION_PROGRESS`)
 
-The central design principle of c6g3-infotainment-services is:
+Whenever any data-transfer, filesystem I/O, or long-running media processing occurs (such as copying files, downloading streams, scanning large folders, transcoding, or buffering), the service **MUST** emit real-time progress events over WebSocket using the standardized `OPERATION_PROGRESS` event.
 
-> **Build a reusable local media and integration infrastructure, with BeamNG as its first client—not a collection of BeamNG-specific workarounds.**
-
-When uncertain where functionality belongs, favor:
-
-```text
-generic core capability
-        ↓
-adapter
-        ↓
-BeamNG
+### Progress Payload Schema:
+```json
+{
+  "event": "OPERATION_PROGRESS",
+  "requestId": "req_cache_1787238200_4512",
+  "action": "COPYING",
+  "progress": 45.5,
+  "current": 4768392,
+  "total": 10485760,
+  "unit": "bytes",
+  "detail": "Fergie - Glamorous ft. Ludacris.mp3"
+}
 ```
 
-rather than:
+### Field Definitions:
+* `event`: Constant `"OPERATION_PROGRESS"`.
+* `requestId`: The originating request's correlation ID.
+* `action`: High-level verb (e.g. `"COPYING"`, `"DOWNLOADING"`, `"SCANNING"`, `"PROCESSING"`).
+* `progress`: Numeric percentage from `0.0` to `100.0` (floating point, 1 decimal place).
+* `current`: Number of units processed so far (bytes copied, items scanned).
+* `total`: Total units to process (`0` if undetermined/streaming).
+* `unit`: Measure unit (e.g. `"bytes"`, `"items"`, `"chunks"`).
+* `detail`: Descriptive filename or subtask description.
 
-```text
-BeamNG-specific implementation
-        ↓
-everything else
-```
+---
+
+# 51. Runtime DLL Enforcement & Static Linking Policy
+
+To maintain a zero-friction, plug-and-play distribution while complying with open-source licensing:
+
+* **Static Compiler Runtimes:** All GCC/MinGW compiler runtimes (`libgcc_s_seh`, `libstdc++`, `libwinpthread`) **MUST** be statically embedded into `c6g3-infotainment-services.exe` via `-static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic`.
+* **Only External / Copyright-Sensitive DLLs:** The `dist/` distribution package **MUST ONLY** contain external, LGPL/copyright-sensitive dynamic libraries (specifically FFmpeg: `avformat-*.dll`, `avcodec-*.dll`, `avutil-*.dll`, `swscale-*.dll`, and `swresample-*.dll` if needed).
+* **Zero Extra DLLs:** Never include or distribute `libstdc++-6.dll`, `libgcc_s_seh-1.dll`, or `libwinpthread-1.dll` in `dist/`.
+

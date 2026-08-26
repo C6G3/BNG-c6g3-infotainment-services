@@ -140,12 +140,19 @@ void WebSocketSession::onMessage(const std::string& message) {
             Logger::instance().info("WebSocket", "Processing SCAN_EXTERNAL_MEDIA: target='{}', mediaTypes=[{}], reqId='{}'",
                                     req.targetPath, mediaTypesStr, req.requestId);
 
+            // Progress callback forwarding OPERATION_PROGRESS events to the client
+            auto onProgress = [weakSelf = weak_from_this()](const OperationProgress& prog) {
+                if (auto self = weakSelf.lock()) {
+                    self->send(prog.toJson().dump());
+                }
+            };
+
             // Execute scan on background worker thread
             resourceManager_.scanExternalMediaAsync(req, [weakSelf = weak_from_this()](const ScanMediaResult& result) {
                 if (auto self = weakSelf.lock()) {
                     self->send(result.toJson().dump());
                 }
-            });
+            }, onProgress);
 
         } else if (action == "CACHE_EXTERNAL_MEDIA") {
             CacheMediaRequest req;
@@ -158,12 +165,19 @@ void WebSocketSession::onMessage(const std::string& message) {
             Logger::instance().info("WebSocket", "Processing CACHE_EXTERNAL_MEDIA: src='{}', targetDir='{}', mediaType='{}', reqId='{}'",
                                     req.sourcePath, req.targetDir, req.mediaType, req.requestId);
 
+            // Progress callback forwarding OPERATION_PROGRESS events to the client
+            auto onProgress = [weakSelf = weak_from_this()](const OperationProgress& prog) {
+                if (auto self = weakSelf.lock()) {
+                    self->send(prog.toJson().dump());
+                }
+            };
+
             // Execute file caching on background worker thread
             resourceManager_.cacheExternalMediaAsync(req, [weakSelf = weak_from_this()](const CacheMediaResult& result) {
                 if (auto self = weakSelf.lock()) {
                     self->send(result.toJson().dump());
                 }
-            });
+            }, onProgress);
 
         } else if (!action.empty()) {
             Logger::instance().debug("WebSocket", "Unknown action: {}", action);
