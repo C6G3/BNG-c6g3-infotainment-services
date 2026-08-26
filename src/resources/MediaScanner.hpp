@@ -17,13 +17,17 @@ public:
     ScanMediaResult scan(const ScanMediaRequest& request, ProgressCallback onProgress = nullptr);
 
 private:
-    void scanDirectory(const std::filesystem::path& dir,
-                       const ScanMediaRequest& request,
-                       bool isImageMode,
-                       std::set<std::string>& extensionsSet,
-                       std::set<std::filesystem::path>& visitedDirs,
-                       std::vector<AudioTrackInfo>& outTracks,
-                       std::vector<ImageItemInfo>& outItems);
+    struct FileEntry {
+        std::filesystem::path path;
+        ScanMediaRequest request;
+    };
+
+    void collectFiles(const std::filesystem::path& dir,
+                      const ScanMediaRequest& request,
+                      bool isImageMode,
+                      std::set<std::string>& extensionsSet,
+                      std::set<std::filesystem::path>& visitedDirs,
+                      std::vector<FileEntry>& outFiles);
 
     void processAudioFile(const std::filesystem::path& filePath,
                           const ScanMediaRequest& request,
