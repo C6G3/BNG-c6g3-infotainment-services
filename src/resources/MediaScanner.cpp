@@ -372,14 +372,14 @@ void MediaScanner::processImageFile(const std::filesystem::path& filePath,
     item.path      = normalizePathSeparators(filePath);
     item.format    = normalizeExtension(filePath.extension().string());
 
-    // Category: uses request.category if specified, otherwise parent folder name
-    if (!request.category.empty()) {
+    // Category: always the immediate folder of the specific file (e.g. "Captures", "pen", "Wallpapers")
+    std::string folderName = filePath.parent_path().filename().string();
+    if (!folderName.empty()) {
+        item.category = folderName;
+    } else if (!request.category.empty()) {
         item.category = request.category;
     } else {
-        item.category = filePath.parent_path().filename().string();
-        if (item.category.empty()) {
-            item.category = "Images";
-        }
+        item.category = "Images";
     }
 
     std::filesystem::path thumbDir(request.outputThumbnailDir);

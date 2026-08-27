@@ -1613,3 +1613,13 @@ To maintain a zero-friction, plug-and-play distribution while complying with ope
 * **Only External / Copyright-Sensitive DLLs:** The `dist/` distribution package **MUST ONLY** contain external, LGPL/copyright-sensitive dynamic libraries (specifically FFmpeg: `avformat-*.dll`, `avcodec-*.dll`, `avutil-*.dll`, `swscale-*.dll`, and `swresample-*.dll` if needed).
 * **Zero Extra DLLs:** Never include or distribute `libstdc++-6.dll`, `libgcc_s_seh-1.dll`, or `libwinpthread-1.dll` in `dist/`.
 
+---
+
+# 52. Category Resolution Standard for Snapshots / Images
+
+When scanning snapshots, pictures, captures, or images:
+* **Immediate Folder Naming:** The `category` property of each item **MUST** always be the name of the immediate folder containing that specific file (`filePath.parent_path().filename().string()`).
+* **Subdirectory Independence:** If a scanned root directory (e.g. `Videos` or `Pictures`) contains subfolders (e.g. `Videos/Captures/gameplay.png` or `Pictures/Wallpapers/mountain.jpg`), the category **MUST** be `Captures` or `Wallpapers`, NOT `Videos` or `Pictures`.
+* **Fallback:** Only if the immediate folder name is empty (e.g. root drive file) should it fallback to the request category or `"Images"`.
+
+
