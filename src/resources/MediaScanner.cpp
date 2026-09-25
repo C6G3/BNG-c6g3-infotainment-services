@@ -24,9 +24,29 @@ extern "C" {
 #include <cctype>
 #include <cmath>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace ifs {
 
 namespace {
+
+std::string toUtf8(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    const std::wstring& ws = path.native();
+    if (ws.empty()) return "";
+    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
+    if (sizeNeeded <= 0) return "";
+    std::string result(sizeNeeded, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()), &result[0], sizeNeeded, nullptr, nullptr);
+    return result;
+#else
+    auto u8 = path.u8string();
+    return std::string(u8.begin(), u8.end());
+#endif
+}
 
 std::string toLower(std::string_view str) {
     std::string result;
@@ -53,6 +73,20 @@ std::string cleanString(std::string str) {
 
 void parseFilenameFallback(const std::string& stem, std::string& outArtist, std::string& outTitle) {
     auto dashPos = stem.find(" - ");
+    if (dashPos == std::string::npos) {
+        dashPos = stem.find(" \xE2\x80\x93 "); // UTF-8 en dash (–)
+        if (dashPos != std::string::npos) {
+            outArtist = cleanString(stem.substr(0, dashPos));
+            outTitle  = cleanString(stem.substr(dashPos + 5));
+            return;
+        }
+        dashPos = stem.find(" \xE2\x80\x94 "); // UTF-8 em dash (—)
+        if (dashPos != std::string::npos) {
+            outArtist = cleanString(stem.substr(0, dashPos));
+            outTitle  = cleanString(stem.substr(dashPos + 5));
+            return;
+        }
+    }
     if (dashPos != std::string::npos) {
         outArtist = cleanString(stem.substr(0, dashPos));
         outTitle  = cleanString(stem.substr(dashPos + 3));
@@ -63,9 +97,36 @@ void parseFilenameFallback(const std::string& stem, std::string& outArtist, std:
 }
 
 std::string normalizePathSeparators(const std::filesystem::path& path) {
-    std::string s = path.string();
+    std::string s = toUtf8(path);
     std::replace(s.begin(), s.end(), '\\', '/');
     return s;
+}
+
+std::string sanitizeThumbFilename(std::string_view name) {
+    std::string out;
+    out.reserve(name.size());
+    for (size_t i = 0; i < name.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(name[i]);
+        // Handle UTF-8 em dash \xE2\x80\x94 and en dash \xE2\x80\x93
+        if (c == 0xE2 && i + 2 < name.size()) {
+            unsigned char c1 = static_cast<unsigned char>(name[i + 1]);
+            unsigned char c2 = static_cast<unsigned char>(name[i + 2]);
+            if (c1 == 0x80 && (c2 == 0x93 || c2 == 0x94)) {
+                out.push_back('-');
+                i += 2;
+                continue;
+            }
+        }
+        // Replace invalid Windows/VFS chars and any non-ASCII (> 126 or < 32) with '_'
+        if (c < 32 || c > 126 || c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' || c == '?' || c == '*') {
+            out.push_back('_');
+        } else {
+            out.push_back(static_cast<char>(c));
+        }
+    }
+    while (!out.empty() && (out.front() == ' ' || out.front() == '.')) out.erase(0, 1);
+    while (!out.empty() && (out.back() == ' ' || out.back() == '.')) out.pop_back();
+    return out.empty() ? "thumb" : out;
 }
 
 } // anonymous namespace
@@ -169,7 +230,7 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request,
             prog.current   = current;
             prog.total     = totalCount;
             prog.unit      = "items";
-            prog.detail    = entry.path.filename().string();
+            prog.detail    = toUtf8(entry.path.filename());
             onProgress(prog);
         }
     }
@@ -200,7 +261,7 @@ void MediaScanner::collectFiles(const std::filesystem::path& dir,
     }
     visitedDirs.insert(canonicalDir);
 
-    Logger::instance().debug("MediaScanner", "Scanning directory: '{}'", dir.string());
+    Logger::instance().debug("MediaScanner", "Scanning directory: '{}'", toUtf8(dir));
 
     try {
         for (const auto& entry : std::filesystem::directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
@@ -211,9 +272,9 @@ void MediaScanner::collectFiles(const std::filesystem::path& dir,
             if (ShortcutResolver::isShortcut(path)) {
                 if (auto resolved = ShortcutResolver::resolve(path)) {
                     Logger::instance().debug("MediaScanner", "Resolved shortcut '{}' -> '{}'",
-                                            path.string(), resolved->string());
+                                            toUtf8(path), toUtf8(*resolved));
 
-                    std::string shortcutCategory = path.stem().string();
+                    std::string shortcutCategory = toUtf8(path.stem());
                     ScanMediaRequest subReq = request;
                     if (subReq.category.empty()) {
                         subReq.category = shortcutCategory;
@@ -222,7 +283,7 @@ void MediaScanner::collectFiles(const std::filesystem::path& dir,
                     if (std::filesystem::is_directory(*resolved)) {
                         collectFiles(*resolved, subReq, isImageMode, extensionsSet, visitedDirs, outFiles);
                     } else if (std::filesystem::is_regular_file(*resolved)) {
-                        auto ext = normalizeExtension(resolved->extension().string());
+                        auto ext = normalizeExtension(toUtf8(resolved->extension()));
                         if (extensionsSet.empty() || extensionsSet.count(ext)) {
                             outFiles.push_back({*resolved, subReq});
                         }
@@ -234,14 +295,14 @@ void MediaScanner::collectFiles(const std::filesystem::path& dir,
             if (entry.is_directory(ec)) {
                 collectFiles(path, request, isImageMode, extensionsSet, visitedDirs, outFiles);
             } else if (entry.is_regular_file(ec)) {
-                auto ext = normalizeExtension(path.extension().string());
+                auto ext = normalizeExtension(toUtf8(path.extension()));
                 if (extensionsSet.empty() || extensionsSet.count(ext)) {
                     outFiles.push_back({path, request});
                 }
             }
         }
     } catch (const std::exception& e) {
-        Logger::instance().warn("MediaScanner", "Error scanning directory {}: {}", dir.string(), e.what());
+        Logger::instance().warn("MediaScanner", "Error scanning directory {}: {}", toUtf8(dir), e.what());
     }
 }
 
@@ -253,7 +314,7 @@ void MediaScanner::processAudioFile(const std::filesystem::path& filePath,
     AudioTrackInfo track;
     track.mediaType = "audio";
     track.path      = normalizePathSeparators(filePath);
-    track.filename  = filePath.filename().string();
+    track.filename  = toUtf8(filePath.filename());
 
     std::filesystem::path thumbDir(request.outputThumbnailDir);
     extractAudioMetadataAndCover(filePath, thumbDir, track);
@@ -273,9 +334,10 @@ bool MediaScanner::extractAudioMetadataAndCover(const std::filesystem::path& fil
                                                 const std::filesystem::path& thumbnailDir,
                                                 AudioTrackInfo& outTrack) {
     AVFormatContext* fmtCtx = nullptr;
-    int ret = avformat_open_input(&fmtCtx, filePath.string().c_str(), nullptr, nullptr);
+    std::string utf8FilePath = toUtf8(filePath);
+    int ret = avformat_open_input(&fmtCtx, utf8FilePath.c_str(), nullptr, nullptr);
     if (ret < 0) {
-        std::string stem = filePath.stem().string();
+        std::string stem = toUtf8(filePath.stem());
         parseFilenameFallback(stem, outTrack.artist, outTrack.title);
         outTrack.album         = "";
         outTrack.category      = "music";
@@ -301,7 +363,7 @@ bool MediaScanner::extractAudioMetadataAndCover(const std::filesystem::path& fil
     std::string album  = getTag("album");
     std::string genre  = getTag("genre");
 
-    std::string stem = filePath.stem().string();
+    std::string stem = toUtf8(filePath.stem());
     if (title.empty() || artist.empty()) {
         std::string fallbackArtist, fallbackTitle;
         parseFilenameFallback(stem, fallbackArtist, fallbackTitle);
@@ -327,7 +389,7 @@ bool MediaScanner::extractAudioMetadataAndCover(const std::filesystem::path& fil
                     imgExt = ".png";
                 }
 
-                std::string thumbFileName = stem + imgExt;
+                std::string thumbFileName = sanitizeThumbFilename(stem) + imgExt;
 
                 if (!thumbnailDir.empty()) {
                     std::error_code ec;
@@ -367,13 +429,13 @@ void MediaScanner::processImageFile(const std::filesystem::path& filePath,
                                     std::vector<ImageItemInfo>& outItems) {
     ImageItemInfo item;
     item.mediaType = "image";
-    item.filename  = filePath.filename().string();
-    item.title     = filePath.stem().string();
+    item.filename  = toUtf8(filePath.filename());
+    item.title     = toUtf8(filePath.stem());
     item.path      = normalizePathSeparators(filePath);
-    item.format    = normalizeExtension(filePath.extension().string());
+    item.format    = normalizeExtension(toUtf8(filePath.extension()));
 
     // Category: always the immediate folder of the specific file (e.g. "Captures", "pen", "Wallpapers")
-    std::string folderName = filePath.parent_path().filename().string();
+    std::string folderName = toUtf8(filePath.parent_path().filename());
     if (!folderName.empty()) {
         item.category = folderName;
     } else if (!request.category.empty()) {
@@ -400,14 +462,27 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
                                                     int maxWidth,
                                                     int maxHeight,
                                                     ImageItemInfo& outItem) {
-    std::string stem = filePath.stem().string();
+    std::string stem = toUtf8(filePath.stem());
     std::string ext  = outItem.format;
     std::string thumbExt = (ext == "jpg" || ext == "jpeg") ? ".jpg" : ".png";
-    std::string thumbFileName = stem + "_thumb" + thumbExt;
+    std::string thumbFileName = sanitizeThumbFilename(stem) + "_thumb" + thumbExt;
 
-    // 1. Try stb_image first (very fast for PNG/JPG/BMP/TGA/GIF)
+    // 1. Try stb_image from memory (supports full Unicode filesystem paths on Windows)
     int origW = 0, origH = 0, channels = 0;
-    unsigned char* imgData = stbi_load(filePath.string().c_str(), &origW, &origH, &channels, 0);
+    unsigned char* imgData = nullptr;
+
+    std::ifstream imgFile(filePath, std::ios::binary | std::ios::ate);
+    if (imgFile.is_open()) {
+        std::streamsize fileSize = imgFile.tellg();
+        if (fileSize > 0 && fileSize < (1024 * 1024 * 128)) {
+            imgFile.seekg(0, std::ios::beg);
+            std::vector<unsigned char> buffer(fileSize);
+            if (imgFile.read(reinterpret_cast<char*>(buffer.data()), fileSize)) {
+                imgData = stbi_load_from_memory(buffer.data(), static_cast<int>(fileSize), &origW, &origH, &channels, 0);
+            }
+        }
+        imgFile.close();
+    }
 
     if (imgData && origW > 0 && origH > 0 && channels > 0) {
         outItem.width  = origW;
@@ -445,9 +520,9 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
             if (writeSuccess) {
                 outItem.thumbnailFile = thumbFileName;
                 Logger::instance().debug("MediaScanner", "[Image] Generated thumbnail for '{}' (orig: {}x{}, scaled: {}x{}) -> '{}'",
-                                        filePath.filename().string(), origW, origH, targetW, targetH, destThumb.string());
+                                        toUtf8(filePath.filename()), origW, origH, targetW, targetH, toUtf8(destThumb));
             } else {
-                Logger::instance().warn("MediaScanner", "Failed to write image thumbnail: {}", destThumb.string());
+                Logger::instance().warn("MediaScanner", "Failed to write image thumbnail: {}", toUtf8(destThumb));
                 outItem.thumbnailFile = "";
             }
         }
@@ -458,7 +533,8 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
 
     // 2. Fallback to FFmpeg (for WebP, DDS, HEIC, AVIF, TIFF, etc.)
     AVFormatContext* fmtCtx = nullptr;
-    if (avformat_open_input(&fmtCtx, filePath.string().c_str(), nullptr, nullptr) >= 0) {
+    std::string utf8FilePath = toUtf8(filePath);
+    if (avformat_open_input(&fmtCtx, utf8FilePath.c_str(), nullptr, nullptr) >= 0) {
         if (avformat_find_stream_info(fmtCtx, nullptr) >= 0 && fmtCtx->nb_streams > 0) {
             int streamIdx = av_find_best_stream(fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
             if (streamIdx >= 0) {
@@ -509,7 +585,7 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
                                                     if (stbi_write_png(destThumb.string().c_str(), targetW, targetH, 3, rgbBuf.data(), targetW * 3)) {
                                                         outItem.thumbnailFile = thumbFileName;
                                                         Logger::instance().debug("MediaScanner", "[Image] Generated thumbnail via FFmpeg for '{}' (orig: {}x{}, scaled: {}x{}) -> '{}'",
-                                                                                filePath.filename().string(), frame->width, frame->height, targetW, targetH, destThumb.string());
+                                                                                toUtf8(filePath.filename()), frame->width, frame->height, targetW, targetH, toUtf8(destThumb));
                                                     }
                                                 }
                                             }

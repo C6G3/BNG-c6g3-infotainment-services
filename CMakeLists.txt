@@ -40,6 +40,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Boost::system
     nlohmann_json::nlohmann_json
     PkgConfig::FFMPEG
+    -Wl,-Bstatic -lwebp -lsharpyuv -Wl,-Bdynamic
     ole32
     oleaut32
     uuid

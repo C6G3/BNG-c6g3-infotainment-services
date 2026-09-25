@@ -188,4 +188,67 @@ struct ProgressConfig {
 
 using ProgressCallback = std::function<void(const OperationProgress&)>;
 
+/// Request payload for image conversion (e.g. PNG to WebP).
+struct ConvertImageRequest {
+    std::string requestId;
+    std::string sourcePath;
+    std::string destinationPath;
+    std::string targetFormat = "webp";
+    int quality = 88;
+    std::string level;
+    bool keepSource = true;
+};
+
+/// Inner data structure for successful image conversion result.
+struct ConvertImageData {
+    std::string sourcePath;
+    std::string destinationPath;
+    std::string vfsPath;
+    std::string format = "webp";
+    std::string level;
+    int width = 0;
+    int height = 0;
+    uint64_t fileSize = 0;
+
+    nlohmann::json toJson() const {
+        nlohmann::json j = {
+            {"sourcePath",      sourcePath},
+            {"destinationPath", destinationPath},
+            {"vfsPath",         vfsPath},
+            {"format",          format},
+            {"width",           width},
+            {"height",          height},
+            {"fileSize",        fileSize}
+        };
+        if (!level.empty()) {
+            j["level"] = level;
+        }
+        return j;
+    }
+};
+
+/// Full response payload for image conversion.
+struct ConvertImageResult {
+    std::string requestId;
+    std::string status = "success";
+    std::string error;
+    ConvertImageData data;
+
+    nlohmann::json toJson() const {
+        nlohmann::json res = {
+            {"event",     "IMAGE_CONVERTED"},
+            {"requestId", requestId},
+            {"status",    status}
+        };
+        if (status == "success") {
+            res["data"] = data.toJson();
+        } else if (!error.empty()) {
+            res["error"] = error;
+        }
+        return res;
+    }
+};
+
+using ConvertCallback = std::function<void(const ConvertImageResult&)>;
+
 } // namespace ifs

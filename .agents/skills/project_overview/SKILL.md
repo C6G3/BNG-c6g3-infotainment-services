@@ -1622,4 +1622,50 @@ When scanning snapshots, pictures, captures, or images:
 * **Subdirectory Independence:** If a scanned root directory (e.g. `Videos` or `Pictures`) contains subfolders (e.g. `Videos/Captures/gameplay.png` or `Pictures/Wallpapers/mountain.jpg`), the category **MUST** be `Captures` or `Wallpapers`, NOT `Videos` or `Pictures`.
 * **Fallback:** Only if the immediate folder name is empty (e.g. root drive file) should it fallback to the request category or `"Images"`.
 
+---
+
+# 53. Image Conversion Protocol (`CONVERT_IMAGE` / `IMAGE_CONVERTED`)
+
+The service provides high-performance on-the-fly image conversion (e.g., PNG/JPG to WebP for map tiles, minimap satellite textures, and UI assets) via `libwebp` statically linked into the core service.
+
+### Request Payload (`CONVERT_IMAGE`):
+```json
+{
+  "action": "CONVERT_IMAGE",
+  "requestId": "req_map_conv_1790345678900_1024",
+  "sourcePath": "C:/Users/wambu/AppData/Local/BeamNG/BeamNG.drive/current/mods/unpacked/c6g3_mods/art/infotainment/system/minimapSatellite/satellite_west_coast_usa.png",
+  "destinationPath": "C:/Users/wambu/AppData/Local/BeamNG/BeamNG.drive/current/mods/unpacked/c6g3_mods/art/infotainment/system/minimapSatellite/satellite_west_coast_usa.webp",
+  "targetFormat": "webp",
+  "quality": 88,
+  "level": "west_coast_usa",
+  "keepSource": true
+}
+```
+
+### Success Response (`IMAGE_CONVERTED`):
+```json
+{
+  "event": "IMAGE_CONVERTED",
+  "requestId": "req_map_conv_1790345678900_1024",
+  "status": "success",
+  "data": {
+    "sourcePath": "C:/Users/wambu/AppData/Local/BeamNG/BeamNG.drive/current/mods/unpacked/c6g3_mods/art/infotainment/system/minimapSatellite/satellite_west_coast_usa.png",
+    "destinationPath": "C:/Users/wambu/AppData/Local/BeamNG/BeamNG.drive/current/mods/unpacked/c6g3_mods/art/infotainment/system/minimapSatellite/satellite_west_coast_usa.webp",
+    "vfsPath": "/art/infotainment/system/minimapSatellite/satellite_west_coast_usa.webp",
+    "format": "webp",
+    "level": "west_coast_usa",
+    "width": 4096,
+    "height": 4096,
+    "fileSize": 1258291
+  }
+}
+```
+
+### Key Behaviors:
+* **Asynchronous Execution:** Conversion executes on a background worker thread and responds asynchronously without blocking the WebSocket strand.
+* **Virtual VFS Path:** Automatically computes virtual BeamNG mount path (`vfsPath` starting from `/art/...`).
+* **Optional Source Removal:** If `keepSource` is `false`, the original source file is deleted upon successful conversion.
+* **Static LibWebP:** `libwebp` is statically compiled into the executable with zero extra runtime DLLs.
+
+
 

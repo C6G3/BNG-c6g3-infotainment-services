@@ -1955,3 +1955,13 @@ All long-running, streaming, or chunked data operations (filesystem caching/copy
 * **Static Compiler Runtimes:** All MinGW/GCC runtime libraries (`libgcc_s_seh`, `libstdc++`, `libwinpthread`) **MUST** be statically linked into the main executable using `-static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic`.
 * **DLL Minimization:** Standalone distribution (`dist/`) **MUST ONLY** bundle external dynamic runtime dependencies (specifically FFmpeg `avformat`, `avcodec`, `avutil`, `swscale`, `swresample`). Never ship compiler runtime DLLs.
 
+---
+
+# 83. Image Conversion & WebP Processing Architecture
+
+* **Static LibWebP Integration:** `libwebp` and `libsharpyuv` **MUST** be statically linked using `-Wl,-Bstatic -lwebp -lsharpyuv -Wl,-Bdynamic` to ensure no additional DLLs are required for WebP encoding/decoding.
+* **Worker Thread Execution:** Image conversion operations (`CONVERT_IMAGE`) must execute on dedicated background worker threads managed by `ResourceManager` rather than the Boost.Beast WebSocket strand.
+* **Unicode & Format Handling:** Source image files must be read using binary streams supporting full Windows Unicode paths. Decoding should leverage `stb_image` for standard raster formats (PNG, JPG, BMP, etc.) with automatic fallback to `WebPDecodeRGBA` for WebP source textures.
+* **Response Contract:** Returns `IMAGE_CONVERTED` with `vfsPath` normalized from `/art/...`, `format`, `level` (if present), `width`, `height`, and `fileSize`.
+
+

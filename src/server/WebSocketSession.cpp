@@ -179,6 +179,33 @@ void WebSocketSession::onMessage(const std::string& message) {
                 }
             }, onProgress);
 
+        } else if (action == "CONVERT_IMAGE") {
+            ConvertImageRequest req;
+            req.requestId       = json.value("requestId", "");
+            req.sourcePath      = json.value("sourcePath", "");
+            req.destinationPath = json.value("destinationPath", "");
+            req.targetFormat    = json.value("targetFormat", "webp");
+            req.quality         = json.value("quality", 88);
+            req.level           = json.value("level", "");
+            req.keepSource      = json.value("keepSource", true);
+
+            Logger::instance().info("WebSocket", "Processing CONVERT_IMAGE: src='{}', dst='{}', targetFormat='{}', quality={}, level='{}', keepSource={}, reqId='{}'",
+                                    req.sourcePath, req.destinationPath, req.targetFormat, req.quality, req.level, req.keepSource, req.requestId);
+
+            // Progress callback forwarding OPERATION_PROGRESS events to the client
+            auto onProgress = [weakSelf = weak_from_this()](const OperationProgress& prog) {
+                if (auto self = weakSelf.lock()) {
+                    self->send(prog.toJson().dump());
+                }
+            };
+
+            // Execute image conversion on background worker thread
+            resourceManager_.convertImageAsync(req, [weakSelf = weak_from_this()](const ConvertImageResult& result) {
+                if (auto self = weakSelf.lock()) {
+                    self->send(result.toJson().dump());
+                }
+            }, onProgress);
+
         } else if (!action.empty()) {
             Logger::instance().debug("WebSocket", "Unknown action: {}", action);
         }

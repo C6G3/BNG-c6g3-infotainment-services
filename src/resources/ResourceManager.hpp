@@ -32,6 +32,15 @@ public:
     CacheMediaResult cacheMedia(const CacheMediaRequest& request,
                                 ProgressCallback onProgress = nullptr);
 
+    /// Converts an image (e.g. PNG to WebP) asynchronously on a dedicated worker thread with optional progress reporting.
+    void convertImageAsync(const ConvertImageRequest& request,
+                           ConvertCallback onComplete,
+                           ProgressCallback onProgress = nullptr);
+
+    /// Synchronous image conversion implementation with optional progress reporting.
+    ConvertImageResult convertImage(const ConvertImageRequest& request,
+                                    ProgressCallback onProgress = nullptr);
+
     /// Sets progress reporting thresholds.
     void setProgressConfig(const ProgressConfig& config);
 
