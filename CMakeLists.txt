@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(c6g3-infotainment-services VERSION 0.1.0 LANGUAGES CXX)
+project(c6g3-infotainment-services VERSION 0.1.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,10 +51,12 @@ add_executable(${PROJECT_NAME}
     src/tts/TextSplitter.cpp
     src/tts/TtsService.cpp
     src/tts/VoiceLibrary.cpp
+    resources/c6g3.rc
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/resources
     C:/msys64/ucrt64/include/stb
 )
 

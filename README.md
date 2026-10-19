@@ -1,10 +1,10 @@
-# c6g3 Infotainment Services
+# C6G3 Infotainment Services
 
-**c6g3 Infotainment Services** is a lightweight, plug-and-play companion app for [BeamNG.drive](https://www.beamng.com/). It runs quietly in the background on your PC to power next-generation in-cabin screens, audio players, and voice assistants in **c6g3 vehicle mods** (such as the Marcopolo Paradiso G8 1800 DD).
+**C6G3 Infotainment Services** is a lightweight, plug-and-play companion app for [BeamNG.drive](https://www.beamng.com/). It runs quietly in the background on your PC to power in-cabin screens, audio players, and voice assistants in **C6G3 vehicle mods** (such as the Marcopolo Paradiso G8 1800 DD).
 
 ---
 
-## Why is this App Needed for c6g3 Mods?
+## Why is this App Needed for C6G3 Mods?
 
 BeamNG.drive is one of the most advanced vehicle physics simulators in the world. However, the in-game dashboard screens run inside a lightweight embedded web browser (CEF) that has natural limitations:
 
@@ -12,12 +12,12 @@ BeamNG.drive is one of the most advanced vehicle physics simulators in the world
    The built-in game screen cannot natively play many popular personal media formats. This service bridges that gap, reading your audio files and smoothly feeding them to your dashboard display.
 
 2. **Keep Your Files Where They Are (No Duplicate Storage)**  
-   Without this service, you would need to copy gigabytes of music files directly into BeamNG's user folder. With **c6g3 Infotainment Services**, you can simply create a regular Windows folder shortcut (`.lnk`) pointing to your existing music drive or folder, and the vehicle browses it instantly.
+   Without this service, you would need to copy gigabytes of music files directly into BeamNG's user folder. With **C6G3 Infotainment Services**, you can simply create a regular Windows folder shortcut (`.lnk`) pointing to your existing music drive or folder, and the vehicle browses it instantly.
 
 3. **Smooth In-Game Performance**  
    Heavy tasks like loading media playlists, background audio decoding, and generating realistic speech happen outside BeamNG's game engine. Your driving physics, steering responsiveness, and frame rates stay fluid with zero micro-stutters.
 
-4. **Next-Gen In-Cabin Voice Assistant**  
+4. **In-Cabin Voice Assistant**  
    Powers lifelike AI voice synthesis directly in the vehicle cockpit, announcing route stops, navigation prompts, and vehicle diagnostics with expressive, natural human voices.
 
 5. **Fast Satellite Minimap Loading**  
@@ -47,7 +47,7 @@ c6g3-infotainment-services.exe
 A console window will appear confirming that the service is running and listening on localhost. You can minimize this window to your taskbar while you drive.
 
 ### Step 2: Start BeamNG.drive
-Load any map and spawn your favorite c6g3 vehicle (e.g., the **Marcopolo Paradiso G8 1800 DD**).
+Load any map and spawn your favorite C6G3 vehicle (e.g., the **Marcopolo Paradiso G8 1800 DD**).
 
 ### Step 3: Enjoy the Dashboard
 Turn on the vehicle ignition and press the power button on the infotainment touchscreen. Your music, playlists, voice assistant, and navigation features will automatically connect and work seamlessly.
@@ -87,4 +87,4 @@ Simply close the `c6g3-infotainment-services.exe` console window or press `Ctrl 
 
 ---
 
-*Developed for the c6g3 vehicle series for BeamNG.drive.*
+*Developed for the C6G3 vehicle series for BeamNG.drive.*
