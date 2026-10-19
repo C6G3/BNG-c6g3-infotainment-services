@@ -1611,6 +1611,7 @@ To maintain a zero-friction, plug-and-play distribution while complying with ope
 
 * **Static Compiler Runtimes:** All GCC/MinGW compiler runtimes (`libgcc_s_seh`, `libstdc++`, `libwinpthread`) **MUST** be statically embedded into `c6g3-infotainment-services.exe` via `-static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic`.
 * **Only External / Copyright-Sensitive DLLs:** The `dist/` distribution package **MUST ONLY** contain external, LGPL/copyright-sensitive dynamic libraries (specifically FFmpeg: `avformat-*.dll`, `avcodec-*.dll`, `avutil-*.dll`, `swscale-*.dll`, and `swresample-*.dll` if needed).
+* **Voice assistant runtime DLLs (approved 2026-10-06):** `sherpa-onnx-c-api.dll` and `onnxruntime.dll` (prebuilt MSVC "MT" package, plain C API, see `third_party/sherpa-onnx/README.md`) are also shipped. The voice model runs on the CPU only.
 * **Zero Extra DLLs:** Never include or distribute `libstdc++-6.dll`, `libgcc_s_seh-1.dll`, or `libwinpthread-1.dll` in `dist/`.
 
 ---
@@ -1667,5 +1668,52 @@ The service provides high-performance on-the-fly image conversion (e.g., PNG/JPG
 * **Optional Source Removal:** If `keepSource` is `false`, the original source file is deleted upon successful conversion.
 * **Static LibWebP:** `libwebp` is statically compiled into the executable with zero extra runtime DLLs.
 
+---
 
+# 54. Text-to-Speech Protocol (`TTS_*`, voice assistant)
 
+The voice assistant's speech runs here: Kokoro v1.0 through the sherpa-onnx C API (`src/tts/`). Clients are the infotainment page (lists voices) and the MainGEUI sound system (`ui/modModules/soundSystem/voiceChannel.js`, requests speech and plays it in the cabin). Messages are additions to the protocol, approved by the user on 2026-10-06.
+
+### Module layout
+* `TtsService`: one `std::jthread` worker, FIFO queue, one request at a time. It loads the engine lazily (or at start with `preload`), and reloads it when the voices folder changes.
+* `KokoroEngine`: RAII wrapper over one `SherpaOnnxOfflineTts`; worker-thread only. `max_num_sentences = 1`, so audio streams sentence by sentence.
+* `VoiceLibrary`: scans `assistant/voices/*.bin`. The model needs exactly `n_speakers` voice slots (read from the engine package's `voices.bin` size), so it builds `assistant/.cache/voices.slots.bin` (folder voices, padded with the first one).
+* Configuration: `assistant.tts` in `config.default.json`. Relative paths resolve against the folder that contains `config/`.
+* `process.priority` (`normal` | `below_normal` | `idle`, default `below_normal`, `platform/windows/ProcessPriority`) sets the whole service's CPU priority class at startup, so BeamNG's threads win while Kokoro synthesises (avoids frame drops; speech gets slightly slower when the game is busy).
+
+### Requests
+```json
+{ "action": "TTS_LIST_VOICES", "requestId": "req_tts_voices_1" }
+{ "action": "TTS_SPEAK", "requestId": "req_tts_test_63075_1791300000000", "text": "Next stop, Central Station.",
+  "voice": "af_heart", "speed": 1.0 }
+{ "action": "TTS_STOP", "requestId": "req_tts_test_63075_1791300000000" }
+{ "action": "TTS_PRELOAD", "requestId": "req_tts_preload_63075_1791300000000" }
+```
+* `voice`: empty uses `default_voice`. `speed` is clamped to 0.5 to 2.0. Synthesis runs on the CPU (GPU/DirectML was tried on 2026-10-06 and removed: Kokoro fails on DirectML).
+* `TTS_STOP` cancels a queued or active request of the same connection. The client then receives `TTS_FINISHED` with status `cancelled`.
+
+### Responses
+```json
+{ "event": "TTS_VOICES", "requestId": "...", "status": "success",
+  "data": { "engineAvailable": true, "engineLoaded": false, "defaultVoice": "af_heart", "sampleRate": 24000,
+            "voices": [ { "id": "af_heart", "language": "en-us", "gender": "female" } ] } }
+{ "event": "TTS_STARTED", "requestId": "...", "status": "success",
+  "data": { "streamId": 1, "voice": "af_heart", "sampleRate": 24000, "channels": 1, "format": "pcm_s16le" } }
+{ "event": "TTS_FINISHED", "requestId": "...", "status": "success",
+  "data": { "streamId": 1, "chunks": 4, "durationSeconds": 1.77, "generationSeconds": 2.1, "realTimeFactor": 1.19 } }
+{ "event": "TTS_ERROR", "requestId": "...", "status": "error", "error": "voice 'xx' not found in ...; available: ..." }
+```
+* `TTS_PRELOAD` (added 2026-10-06 with user approval) queues an engine load on the worker and answers `{ "event": "TTS_PRELOADED", "requestId", "status": "success"|"error", "error"?, "data": { "engineLoaded", "alreadyLoaded", "loadSeconds" } }`. The infotainment sends it while the assistant is ON, so the first speech has no load delay.
+* `...` (or `…`) in TTS_SPEAK text is an exact pause: `splitAtPauses` synthesises the parts separately with `assistant.tts.pause_ms` (default 200) of silence between them (the voice itself renders `...` as ~60 ms). Used after fillers: "Ah... Hill Climb 1."
+* Long sentences are cut at `, ; :` (piece ≥ 40 chars, rest of the sentence ≥ 25) by `TextSplitter` and synthesised piece by piece for faster first audio. `num_threads` defaults to 3.
+* `TTS_VOICES` has status `error` (with `error`) when engine files are missing; the voices are still listed.
+* `TTS_ERROR` may follow `TTS_STARTED` (synthesis failed mid-request).
+
+### Binary audio frames
+`"C6PC"` (4 bytes) | `streamId` uint32 LE | `chunkSeq` uint32 LE | int16 LE mono PCM at `sampleRate`.
+Frames carry `chunk_samples` samples (0.5 s by default) and arrive between `TTS_STARTED` and `TTS_FINISHED`. Audio has its own write-queue budget (32 MB) separate from the 64-message text limit, so a long utterance never crowds out events.
+
+### Key Behaviors
+* **Never blocks the WebSocket strand:** synthesis runs on the TTS worker; sessions are referenced weakly, and a disconnected client's requests are dropped.
+* **Hot-swappable voices:** voices added to or removed from `assistant/voices/` are picked up on the next request (engine reload, a few seconds).
+* **One engine:** Kokoro v1.0 fp32 (`assistant/voice-engine/kokoro-multi-lang-v1_0/`). The int8 model was removed because it is about 2.5 times slower on CPU.

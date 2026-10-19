@@ -2,6 +2,7 @@
 #include "server/ConnectionManager.hpp"
 #include "resources/ResourceManager.hpp"
 #include "resources/Resource.hpp"
+#include "tts/TtsService.hpp"
 #include "core/Logger.hpp"
 #include "core/Types.hpp"
 
@@ -19,10 +20,12 @@ namespace ifs {
 
 WebSocketSession::WebSocketSession(net::ip::tcp::socket socket,
                                    ConnectionManager& manager,
-                                   ResourceManager& resourceManager)
+                                   ResourceManager& resourceManager,
+                                   TtsService& ttsService)
     : ws_(std::move(socket))
     , manager_(manager)
-    , resourceManager_(resourceManager) {}
+    , resourceManager_(resourceManager)
+    , ttsService_(ttsService) {}
 
 WebSocketSession::~WebSocketSession() = default;
 
@@ -50,6 +53,7 @@ void WebSocketSession::onAccept(beast::error_code ec) {
     }
 
     manager_.join(shared_from_this());
+    open_ = true;
 
     Logger::instance().info("WebSocket", "Client connected (total: {})",
                             manager_.connectionCount());
@@ -82,6 +86,7 @@ void WebSocketSession::onRead(beast::error_code ec, std::size_t /*bytes*/) {
             ec != net::error::operation_aborted) {
             Logger::instance().debug("WebSocket", "Read error: {}", ec.message());
         }
+        open_ = false;
         manager_.leave(shared_from_this());
         Logger::instance().info("WebSocket", "Client disconnected (total: {})",
                                 manager_.connectionCount());
@@ -186,11 +191,12 @@ void WebSocketSession::onMessage(const std::string& message) {
             req.destinationPath = json.value("destinationPath", "");
             req.targetFormat    = json.value("targetFormat", "webp");
             req.quality         = json.value("quality", 88);
+            req.lossless        = json.value("lossless", false);
             req.level           = json.value("level", "");
             req.keepSource      = json.value("keepSource", true);
 
-            Logger::instance().info("WebSocket", "Processing CONVERT_IMAGE: src='{}', dst='{}', targetFormat='{}', quality={}, level='{}', keepSource={}, reqId='{}'",
-                                    req.sourcePath, req.destinationPath, req.targetFormat, req.quality, req.level, req.keepSource, req.requestId);
+            Logger::instance().info("WebSocket", "Processing CONVERT_IMAGE: src='{}', dst='{}', targetFormat='{}', quality={}, lossless={}, level='{}', keepSource={}, reqId='{}'",
+                                    req.sourcePath, req.destinationPath, req.targetFormat, req.quality, req.lossless, req.level, req.keepSource, req.requestId);
 
             // Progress callback forwarding OPERATION_PROGRESS events to the client
             auto onProgress = [weakSelf = weak_from_this()](const OperationProgress& prog) {
@@ -206,6 +212,31 @@ void WebSocketSession::onMessage(const std::string& message) {
                 }
             }, onProgress);
 
+        } else if (action == "TTS_LIST_VOICES") {
+            auto requestId = json.value("requestId", "");
+            Logger::instance().info("WebSocket", "Processing TTS_LIST_VOICES: reqId='{}'", requestId);
+            send(ttsService_.listVoices(requestId).toJson().dump());
+
+        } else if (action == "TTS_SPEAK") {
+            SpeakRequest req;
+            req.requestId = json.value("requestId", "");
+            req.text      = json.value("text", "");
+            req.voice     = json.value("voice", "");
+            req.speed     = json.value("speed", 1.0f);
+
+            Logger::instance().info("WebSocket", "Processing TTS_SPEAK: voice='{}', speed={}, chars={}, reqId='{}'",
+                                    req.voice, req.speed, req.text.size(), req.requestId);
+
+            ttsService_.speak(std::move(req), makeTtsSink());
+
+        } else if (action == "TTS_PRELOAD") {
+            auto requestId = json.value("requestId", "");
+            Logger::instance().info("WebSocket", "Processing TTS_PRELOAD: reqId='{}'", requestId);
+            ttsService_.preload(std::move(requestId), makeTtsSink());
+
+        } else if (action == "TTS_STOP") {
+            ttsService_.cancel(this, json.value("requestId", ""));
+
         } else if (!action.empty()) {
             Logger::instance().debug("WebSocket", "Unknown action: {}", action);
         }
@@ -215,18 +246,51 @@ void WebSocketSession::onMessage(const std::string& message) {
     }
 }
 
+// Audio and events go back to this session; the TTS service holds only weak references
+TtsService::Sink WebSocketSession::makeTtsSink() {
+    TtsService::Sink sink;
+    sink.owner    = this;
+    sink.sendText = [weakSelf = weak_from_this()](const std::string& msg) {
+        if (auto self = weakSelf.lock()) self->send(msg);
+    };
+    sink.sendBinary = [weakSelf = weak_from_this()](std::string frame) {
+        if (auto self = weakSelf.lock()) self->sendBinary(std::move(frame));
+    };
+    sink.isConnected = [weakSelf = weak_from_this()]() {
+        auto self = weakSelf.lock();
+        return self && self->isOpen();
+    };
+    return sink;
+}
+
 // ─── Writing (thread-safe, bounded queue on io_context strand) ───────────────
 
 void WebSocketSession::send(const std::string& message) {
     Logger::instance().debug("WebSocket", "[OUT] {}", message);
+    enqueue(message, false);
+}
 
-    net::post(ws_.get_executor(), [self = shared_from_this(), message]() {
-        if (self->writeQueue_.size() >= MAX_QUEUE_SIZE) {
+void WebSocketSession::sendBinary(std::string frame) {
+    Logger::instance().trace("WebSocket", "[OUT] binary frame, {} bytes", frame.size());
+    enqueue(std::move(frame), true);
+}
+
+void WebSocketSession::enqueue(std::string payload, bool binary) {
+    net::post(ws_.get_executor(), [self = shared_from_this(), payload = std::move(payload), binary]() mutable {
+        // Text and audio have separate limits so a long speech stream cannot crowd out events
+        if (!binary && self->queuedText_ >= MAX_QUEUE_SIZE) {
             Logger::instance().warn("WebSocket", "Write queue full, dropping message");
             return;
         }
+        if (binary && self->queuedBinaryBytes_ + payload.size() > MAX_BINARY_QUEUE_BYTES) {
+            Logger::instance().warn("WebSocket", "Audio queue full ({} bytes pending), dropping a {} byte frame",
+                                    self->queuedBinaryBytes_, payload.size());
+            return;
+        }
 
-        self->writeQueue_.push_back(message);
+        if (binary) self->queuedBinaryBytes_ += payload.size();
+        else        ++self->queuedText_;
+        self->writeQueue_.push_back(OutgoingMessage{std::move(payload), binary});
 
         if (!self->writing_) {
             self->doWrite();
@@ -242,8 +306,9 @@ void WebSocketSession::doWrite() {
 
     writing_ = true;
 
+    ws_.binary(writeQueue_.front().binary);
     ws_.async_write(
-        net::buffer(writeQueue_.front()),
+        net::buffer(writeQueue_.front().payload),
         [self = shared_from_this()](beast::error_code ec, std::size_t bytes) {
             self->onWrite(ec, bytes);
         });
@@ -252,10 +317,14 @@ void WebSocketSession::doWrite() {
 void WebSocketSession::onWrite(beast::error_code ec, std::size_t /*bytes*/) {
     if (ec) {
         Logger::instance().debug("WebSocket", "Write error: {}", ec.message());
+        open_ = false;
         manager_.leave(shared_from_this());
         return;
     }
 
+    const auto& sent = writeQueue_.front();
+    if (sent.binary) queuedBinaryBytes_ -= sent.payload.size();
+    else             --queuedText_;
     writeQueue_.pop_front();
     doWrite();
 }

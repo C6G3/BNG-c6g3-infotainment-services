@@ -10,6 +10,7 @@
 namespace ifs {
 
 class WebSocketServer;
+class TtsService;
 
 class Application {
 public:
@@ -36,6 +37,7 @@ private:
 
     Config                                config_;
     ResourceManager                       resourceManager_;
+    std::unique_ptr<TtsService>           ttsService_;  // outlives server_ (sessions reference it)
     std::unique_ptr<WebSocketServer>      server_;
     std::chrono::steady_clock::time_point startTime_;
     std::atomic<bool>                     running_{false};

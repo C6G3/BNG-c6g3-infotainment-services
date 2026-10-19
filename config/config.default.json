@@ -7,8 +7,25 @@
     "logging": {
         "level": "DEBUG"
     },
+    "process": {
+        "priority": "below_normal"
+    },
     "progress": {
         "min_file_size_bytes": 1048576,
-        "min_scan_items": 3
+        "min_scan_items": 2
+    },
+    "assistant": {
+        "root": "assistant",
+        "tts": {
+            "engine_dir": "voice-engine/kokoro-multi-lang-v1_0",
+            "voices_dir": "voices",
+            "cache_dir": ".cache",
+            "default_voice": "af_heart",
+            "num_threads": 3,
+            "max_text_chars": 2000,
+            "chunk_samples": 12000,
+            "preload": false,
+            "pause_ms": 200
+        }
     }
 }

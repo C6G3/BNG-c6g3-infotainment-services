@@ -1,5 +1,7 @@
 #include "app/Application.hpp"
 #include "server/WebSocketServer.hpp"
+#include "tts/TtsService.hpp"
+#include "platform/windows/ProcessPriority.hpp"
 #include "core/Logger.hpp"
 #include "core/Types.hpp"
 
@@ -37,8 +39,7 @@ namespace {
 
 // ─── Construction / Destruction ──────────────────────────────────────────────
 
-Application::Application()
-    : server_(std::make_unique<WebSocketServer>(resourceManager_)) {}
+Application::Application() = default;
 
 Application::~Application() {
     shutdown();
@@ -69,6 +70,11 @@ bool Application::initialize(int argc, char* argv[]) {
     config_.load(configPath);
     log.setLevel(Logger::parseLevel(config_.getLogLevel()));
     resourceManager_.setProgressConfig(config_.getProgressConfig());
+    ProcessPriority::apply(config_.getProcessPriority());
+
+    // Services that need configuration are created once it is loaded
+    ttsService_ = std::make_unique<TtsService>(config_.getTtsConfig());
+    server_     = std::make_unique<WebSocketServer>(resourceManager_, *ttsService_);
 
     log.info("App", "{} v{} initializing...", SERVICE_NAME, SERVICE_VERSION);
 
@@ -85,6 +91,8 @@ int Application::run() {
     auto& log = Logger::instance();
 
     startTime_ = std::chrono::steady_clock::now();
+
+    ttsService_->start();
 
     if (!server_->start(config_.getHost(), config_.getPort())) {
         log.critical("App", "Failed to start WebSocket server on ws://{}:{}",
@@ -123,6 +131,7 @@ int Application::run() {
 
     log.info("App", "Shutting down...");
     server_->stop();
+    ttsService_->stop();
     log.info("App", "Shutdown complete");
     return 0;
 }

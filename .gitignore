@@ -59,3 +59,12 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 $RECYCLE.BIN/
+
+# Voice assistant: downloaded binaries and model weights (developers download them; the release zip
+# gets them by hand). Folder structure, READMEs and voices stay in git.
+third_party/downloads/
+third_party/sherpa-onnx/lib/
+assistant/voice-engine/*/
+assistant/.cache/
+*.onnx
+*.gguf

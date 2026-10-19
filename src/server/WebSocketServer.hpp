@@ -9,12 +9,13 @@
 namespace ifs {
 
 class ResourceManager;
+class TtsService;
 
 /// WebSocket server built on Boost.Beast + Boost.Asio.
 /// All Beast/Asio types are hidden behind PIMPL.
 class WebSocketServer {
 public:
-    explicit WebSocketServer(ResourceManager& resourceManager);
+    WebSocketServer(ResourceManager& resourceManager, TtsService& ttsService);
     ~WebSocketServer();
 
     WebSocketServer(const WebSocketServer&)            = delete;

@@ -17,18 +17,40 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libavutil
 )
 
+# sherpa-onnx C API (Kokoro TTS). Prebuilt MSVC DLLs; the plain C interface links from MinGW.
+# Binaries are not in git: see third_party/sherpa-onnx/README.md
+set(SHERPA_ONNX_DIR ${CMAKE_SOURCE_DIR}/third_party/sherpa-onnx)
+set(SHERPA_ONNX_RUNTIME_DLLS
+    ${SHERPA_ONNX_DIR}/lib/sherpa-onnx-c-api.dll
+    ${SHERPA_ONNX_DIR}/lib/onnxruntime.dll
+)
+if(NOT EXISTS ${SHERPA_ONNX_DIR}/lib/sherpa-onnx-c-api.lib)
+    message(FATAL_ERROR "sherpa-onnx binaries not found in ${SHERPA_ONNX_DIR}/lib — see third_party/sherpa-onnx/README.md")
+endif()
+add_library(sherpa_onnx_c_api SHARED IMPORTED)
+set_target_properties(sherpa_onnx_c_api PROPERTIES
+    IMPORTED_LOCATION             ${SHERPA_ONNX_DIR}/lib/sherpa-onnx-c-api.dll
+    IMPORTED_IMPLIB               ${SHERPA_ONNX_DIR}/lib/sherpa-onnx-c-api.lib
+    INTERFACE_INCLUDE_DIRECTORIES ${SHERPA_ONNX_DIR}/include
+)
+
 # Main executable
 add_executable(${PROJECT_NAME}
     src/main.cpp
     src/core/Logger.cpp
     src/app/Config.cpp
     src/app/Application.cpp
+    src/platform/windows/ProcessPriority.cpp
     src/platform/windows/ShortcutResolver.cpp
     src/resources/MediaScanner.cpp
     src/resources/ResourceManager.cpp
     src/server/ConnectionManager.cpp
     src/server/WebSocketSession.cpp
     src/server/WebSocketServer.cpp
+    src/tts/KokoroEngine.cpp
+    src/tts/TextSplitter.cpp
+    src/tts/TtsService.cpp
+    src/tts/VoiceLibrary.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -40,6 +62,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Boost::system
     nlohmann_json::nlohmann_json
     PkgConfig::FFMPEG
+    sherpa_onnx_c_api
     -Wl,-Bstatic -lwebp -lsharpyuv -Wl,-Bdynamic
     ole32
     oleaut32
@@ -73,11 +96,21 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMENT "Bundling config/ to build output directory"
 )
 
+# ─── Post-build: Copy TTS runtime DLLs next to the executable ───────────────
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${SHERPA_ONNX_RUNTIME_DLLS}
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>
+    COMMENT "Copying sherpa-onnx runtime DLLs to build output directory"
+)
+
 # ─── Dist Target: Package standalone release into dist/ ─────────────────────
 set(DIST_DIR ${CMAKE_SOURCE_DIR}/dist/${PROJECT_NAME})
 
 if(WIN32)
-    # Collect only FFmpeg runtime DLLs for portable distribution (compiler runtimes are statically linked)
+    # Collect only third-party runtime DLLs (FFmpeg, sherpa-onnx/onnxruntime) for portable distribution
+    # (compiler runtimes are statically linked). assistant/ ships with whatever models are present locally;
+    # model weights are not in git and are added to the release package by hand.
     add_custom_target(dist
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${DIST_DIR}
@@ -88,6 +121,9 @@ if(WIN32)
             C:/msys64/ucrt64/bin/swscale-9.dll
             C:/msys64/ucrt64/bin/avutil-60.dll
             ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy ${SHERPA_ONNX_RUNTIME_DLLS} ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assistant ${DIST_DIR}/assistant
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${DIST_DIR}/assistant/.cache
         COMMENT "Bundling standalone distribution in dist/${PROJECT_NAME}"
         DEPENDS ${PROJECT_NAME}
     )

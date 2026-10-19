@@ -195,6 +195,8 @@ struct ConvertImageRequest {
     std::string destinationPath;
     std::string targetFormat = "webp";
     int quality = 88;
+    /// Lossless WebP (VP8L, pixel-exact): ~1.55x smaller than PNG, slower to encode. `quality` is ignored.
+    bool lossless = false;
     std::string level;
     bool keepSource = true;
 };

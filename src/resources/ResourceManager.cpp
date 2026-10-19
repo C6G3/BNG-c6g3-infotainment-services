@@ -387,10 +387,55 @@ ConvertImageResult ResourceManager::convertImage(const ConvertImageRequest& requ
     size_t webpSize = 0;
     float quality = static_cast<float>(request.quality > 0 ? std::clamp(request.quality, 1, 100) : 88);
 
+    // Lossless (VP8L) through the advanced API, preset level 0 (= cwebp -lossless -z 0): still pixel-exact.
+    // Measured on the 4096 px Italy capture (17.1 MB PNG): z0 12.6 MB in 3.2 s, z1 11.8 MB 9.4 s, z3 11.5 MB 13 s,
+    // z6 10.7 MB ~29 s. The user found 20-30 s too long; z0 is ~9x faster for +18% size (1.36x smaller than PNG).
+    // The writer's buffer is released with WebPFree, like the simple API's.
+    std::string encodeError;
+    auto encodeLossless = [&](const uint8_t* pixels, int stride, bool hasAlpha) -> size_t {
+        WebPConfig config;
+        if (!WebPConfigInit(&config) || !WebPConfigLosslessPreset(&config, 0)) {
+            encodeError = "WebP lossless config init failed";
+            return 0;
+        }
+        config.thread_level = 1;
+        WebPPicture pic;
+        if (!WebPPictureInit(&pic)) {
+            encodeError = "WebP picture init failed";
+            return 0;
+        }
+        pic.use_argb = 1;
+        pic.width    = width;
+        pic.height   = height;
+        const int imported = hasAlpha ? WebPPictureImportRGBA(&pic, pixels, stride)
+                                      : WebPPictureImportRGB(&pic, pixels, stride);
+        if (!imported) {
+            WebPPictureFree(&pic);
+            encodeError = "WebP picture import failed (out of memory?)";
+            return 0;
+        }
+        WebPMemoryWriter writer;
+        WebPMemoryWriterInit(&writer);
+        pic.writer     = WebPMemoryWrite;
+        pic.custom_ptr = &writer;
+        const int ok = WebPEncode(&config, &pic);
+        const int picError = static_cast<int>(pic.error_code);
+        WebPPictureFree(&pic);
+        if (!ok) {
+            WebPMemoryWriterClear(&writer);
+            encodeError = "WebP lossless encode failed (error code " + std::to_string(picError) + ")";
+            return 0;
+        }
+        webpData = writer.mem;
+        return writer.size;
+    };
+
     if (channels == 4) {
-        webpSize = WebPEncodeRGBA(imgData, width, height, width * 4, quality, &webpData);
+        webpSize = request.lossless ? encodeLossless(imgData, width * 4, true)
+                                    : WebPEncodeRGBA(imgData, width, height, width * 4, quality, &webpData);
     } else if (channels == 3) {
-        webpSize = WebPEncodeRGB(imgData, width, height, width * 3, quality, &webpData);
+        webpSize = request.lossless ? encodeLossless(imgData, width * 3, false)
+                                    : WebPEncodeRGB(imgData, width, height, width * 3, quality, &webpData);
     } else {
         // Convert 1 or 2 channels to RGBA
         std::vector<unsigned char> rgba(width * height * 4);
@@ -402,15 +447,17 @@ ConvertImageResult ResourceManager::convertImage(const ConvertImageRequest& requ
             rgba[i * 4 + 2] = v;
             rgba[i * 4 + 3] = a;
         }
-        webpSize = WebPEncodeRGBA(rgba.data(), width, height, width * 4, quality, &webpData);
+        webpSize = request.lossless ? encodeLossless(rgba.data(), width * 4, true)
+                                    : WebPEncodeRGBA(rgba.data(), width, height, width * 4, quality, &webpData);
     }
 
     stbi_image_free(imgData);
 
     if (webpSize == 0 || !webpData) {
-        Logger::instance().error("ResourceManager", "Failed to encode image to WebP for '{}'", request.sourcePath);
+        const std::string reason = encodeError.empty() ? "Failed to encode image to WebP" : encodeError;
+        Logger::instance().error("ResourceManager", "Failed to encode image to WebP for '{}': {}", request.sourcePath, reason);
         result.status = "error";
-        result.error  = "Failed to encode image to WebP";
+        result.error  = reason;
         return result;
     }
 

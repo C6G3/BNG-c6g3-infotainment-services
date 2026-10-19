@@ -24,11 +24,13 @@ class WsListener : public std::enable_shared_from_this<WsListener> {
 public:
     WsListener(net::io_context& ioc, tcp::endpoint endpoint,
                ConnectionManager& manager,
-               ResourceManager& resourceManager)
+               ResourceManager& resourceManager,
+               TtsService& ttsService)
         : ioc_(ioc)
         , acceptor_(ioc)
         , manager_(manager)
         , resourceManager_(resourceManager)
+        , ttsService_(ttsService)
     {
         beast::error_code ec;
 
@@ -81,7 +83,7 @@ private:
         }
 
         // Each accepted connection becomes a WebSocket session with resource manager
-        std::make_shared<WebSocketSession>(std::move(socket), manager_, resourceManager_)->run();
+        std::make_shared<WebSocketSession>(std::move(socket), manager_, resourceManager_, ttsService_)->run();
         doAccept();
     }
 
@@ -89,14 +91,16 @@ private:
     tcp::acceptor      acceptor_;
     ConnectionManager& manager_;
     ResourceManager&   resourceManager_;
+    TtsService&        ttsService_;
 };
 
 // ─── WebSocketServer PIMPL ───────────────────────────────────────────────────
 
 struct WebSocketServer::Impl {
-    explicit Impl(ResourceManager& rm) : resourceManager(rm) {}
+    Impl(ResourceManager& rm, TtsService& tts) : resourceManager(rm), ttsService(tts) {}
 
     ResourceManager&             resourceManager;
+    TtsService&                  ttsService;
     net::io_context              ioc{1};  // single-threaded
     std::shared_ptr<WsListener>  listener;
     std::thread                  workerThread;
@@ -109,8 +113,8 @@ struct WebSocketServer::Impl {
     bool                         heartbeatActive = false;
 };
 
-WebSocketServer::WebSocketServer(ResourceManager& resourceManager)
-    : impl_(std::make_unique<Impl>(resourceManager)) {}
+WebSocketServer::WebSocketServer(ResourceManager& resourceManager, TtsService& ttsService)
+    : impl_(std::make_unique<Impl>(resourceManager, ttsService)) {}
 
 WebSocketServer::~WebSocketServer() {
     stop();
@@ -124,7 +128,8 @@ bool WebSocketServer::start(const std::string& host, uint16_t port) {
         auto endpoint = tcp::endpoint{address, port};
 
         impl_->listener = std::make_shared<WsListener>(
-            impl_->ioc, endpoint, impl_->connectionManager, impl_->resourceManager);
+            impl_->ioc, endpoint, impl_->connectionManager, impl_->resourceManager,
+            impl_->ttsService);
 
         if (!impl_->listener->isOpen()) {
             log.error("WebSocket", "Failed to bind to {}:{}", host, port);
