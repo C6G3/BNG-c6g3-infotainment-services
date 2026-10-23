@@ -84,6 +84,10 @@ struct ResourceManager::Impl {
     ProgressConfig progressConfig;
     std::mutex     workersMutex;
     std::vector<std::thread> workers;
+    VideoStreamer  videoStreamer; // its destructor stops the open streams
+    RadioStreamer  radioStreamer; // same
+    RadioDiscovery radioDiscovery; // its destructor waits for the searches
+    WebRtcProbe    webRtcProbe;    // its destructor closes Chrome
 
     ~Impl() {
         std::lock_guard lock(workersMutex);
@@ -107,6 +111,22 @@ void ResourceManager::setProgressConfig(const ProgressConfig& config) {
 
 const ProgressConfig& ResourceManager::getProgressConfig() const {
     return impl_->progressConfig;
+}
+
+VideoStreamer& ResourceManager::videoStreamer() {
+    return impl_->videoStreamer;
+}
+
+RadioStreamer& ResourceManager::radioStreamer() {
+    return impl_->radioStreamer;
+}
+
+RadioDiscovery& ResourceManager::radioDiscovery() {
+    return impl_->radioDiscovery;
+}
+
+WebRtcProbe& ResourceManager::webRtcProbe() {
+    return impl_->webRtcProbe;
 }
 
 void ResourceManager::scanExternalMediaAsync(const ScanMediaRequest& request,
@@ -174,11 +194,12 @@ CacheMediaResult ResourceManager::cacheMedia(const CacheMediaRequest& request, P
         return result;
     }
 
-    std::filesystem::path dstFile = dstDir / outFilename;
     uint64_t totalBytes = std::filesystem::file_size(src, ec);
     if (ec) totalBytes = 0;
 
     const bool shouldReportProgress = onProgress && (totalBytes >= impl_->progressConfig.minFileSizeBytes);
+
+    std::filesystem::path dstFile = dstDir / outFilename;
 
     // Report initial progress (0%)
     if (shouldReportProgress) {

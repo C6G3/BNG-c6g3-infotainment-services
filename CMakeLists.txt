@@ -14,6 +14,7 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libavformat
     libavcodec
     libswscale
+    libswresample
     libavutil
 )
 
@@ -44,6 +45,11 @@ add_executable(${PROJECT_NAME}
     src/platform/windows/ShortcutResolver.cpp
     src/resources/MediaScanner.cpp
     src/resources/ResourceManager.cpp
+    src/resources/VideoTranscoder.cpp
+    src/resources/VideoStreamer.cpp
+    src/resources/RadioStreamer.cpp
+    src/resources/RadioDiscovery.cpp
+    src/resources/WebRtcProbe.cpp
     src/server/ConnectionManager.cpp
     src/server/WebSocketSession.cpp
     src/server/WebSocketServer.cpp
@@ -110,19 +116,20 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 set(DIST_DIR ${CMAKE_SOURCE_DIR}/dist/${PROJECT_NAME})
 
 if(WIN32)
-    # Collect only third-party runtime DLLs (FFmpeg, sherpa-onnx/onnxruntime) for portable distribution
-    # (compiler runtimes are statically linked). assistant/ ships with whatever models are present locally;
-    # model weights are not in git and are added to the release package by hand.
+    # Bundles every runtime DLL the exe needs, followed recursively (FFmpeg and everything it links: libvpx,
+    # libopus, ... about 100 DLLs), so the release runs without MSYS2 on PATH; see cmake/BundleRuntimeDlls.cmake.
+    # Compiler runtimes are statically linked into the exe itself. assistant/ ships with whatever models are
+    # present locally; model weights are not in git and are added to the release package by hand.
+    get_filename_component(MINGW_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
     add_custom_target(dist
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/config ${DIST_DIR}/config
-        COMMAND ${CMAKE_COMMAND} -E copy
-            C:/msys64/ucrt64/bin/avformat-62.dll
-            C:/msys64/ucrt64/bin/avcodec-62.dll
-            C:/msys64/ucrt64/bin/swscale-9.dll
-            C:/msys64/ucrt64/bin/avutil-60.dll
-            ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND}
+            -DEXE=$<TARGET_FILE:${PROJECT_NAME}>
+            -DDEST=${DIST_DIR}
+            "-DSEARCH_DIRS=$<TARGET_FILE_DIR:${PROJECT_NAME}>|${MINGW_BIN_DIR}"
+            -P ${CMAKE_SOURCE_DIR}/cmake/BundleRuntimeDlls.cmake
         COMMAND ${CMAKE_COMMAND} -E copy ${SHERPA_ONNX_RUNTIME_DLLS} ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assistant ${DIST_DIR}/assistant
         COMMAND ${CMAKE_COMMAND} -E rm -rf ${DIST_DIR}/assistant/.cache

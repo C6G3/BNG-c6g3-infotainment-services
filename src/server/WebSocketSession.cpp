@@ -184,6 +184,101 @@ void WebSocketSession::onMessage(const std::string& message) {
                 }
             }, onProgress);
 
+        } else if (action == "VIDEO_STREAM_OPEN") {
+            VideoStreamOpenRequest req;
+            req.requestId  = json.value("requestId", "");
+            req.sourcePath = json.value("sourcePath", "");
+            req.targetDir  = json.value("targetDir", "");
+            req.startTime  = json.value("startTime", 0.0);
+
+            Logger::instance().info("WebSocket", "Processing VIDEO_STREAM_OPEN: src='{}', targetDir='{}', start={:.1f}s, reqId='{}'",
+                                    req.sourcePath, req.targetDir, req.startTime, req.requestId);
+
+            VideoStreamer::Sink sink;
+            sink.send = [weakSelf = weak_from_this()](const std::string& msg) {
+                if (auto self = weakSelf.lock()) self->send(msg);
+            };
+            sink.isConnected = [weakSelf = weak_from_this()]() {
+                auto self = weakSelf.lock();
+                return self && self->isOpen();
+            };
+            resourceManager_.videoStreamer().open(req, std::move(sink));
+
+        } else if (action == "VIDEO_STREAM_SEEK") {
+            resourceManager_.videoStreamer().seek(json.value("requestId", ""), json.value("time", 0.0));
+
+        } else if (action == "VIDEO_STREAM_POSITION") {
+            resourceManager_.videoStreamer().position(json.value("requestId", ""), json.value("time", 0.0));
+
+        } else if (action == "VIDEO_STREAM_CLOSE") {
+            Logger::instance().info("WebSocket", "Processing VIDEO_STREAM_CLOSE: reqId='{}'", json.value("requestId", ""));
+            resourceManager_.videoStreamer().close(json.value("requestId", ""));
+
+        } else if (action == "RADIO_STREAM_OPEN") {
+            RadioStreamOpenRequest req;
+            req.requestId      = json.value("requestId", "");
+            req.url            = json.value("url", "");
+            req.targetDir      = json.value("targetDir", "");
+            req.maxBufferBytes = static_cast<int64_t>(json.value("maxBufferMB", 4.0) * 1024.0 * 1024.0);
+            req.bitRate        = json.value("bitRate", static_cast<int64_t>(96000));
+
+            Logger::instance().info("WebSocket", "Processing RADIO_STREAM_OPEN: url='{}', targetDir='{}', reqId='{}'",
+                                    req.url, req.targetDir, req.requestId);
+
+            RadioStreamer::Sink sink;
+            sink.send = [weakSelf = weak_from_this()](const std::string& msg) {
+                if (auto self = weakSelf.lock()) self->send(msg);
+            };
+            sink.isConnected = [weakSelf = weak_from_this()]() {
+                auto self = weakSelf.lock();
+                return self && self->isOpen();
+            };
+            resourceManager_.radioStreamer().open(req, std::move(sink));
+
+        } else if (action == "RADIO_STREAM_KEEPALIVE") {
+            resourceManager_.radioStreamer().keepAlive(json.value("requestId", ""));
+
+        } else if (action == "RADIO_STREAM_CLOSE") {
+            Logger::instance().info("WebSocket", "Processing RADIO_STREAM_CLOSE: reqId='{}'", json.value("requestId", ""));
+            resourceManager_.radioStreamer().close(json.value("requestId", ""));
+
+        } else if (action == "WEBRTC_PROBE_START") {
+            WebRtcProbe::Sink sink;
+            sink.send = [weakSelf = weak_from_this()](const std::string& msg) {
+                if (auto self = weakSelf.lock()) self->send(msg);
+            };
+            sink.isConnected = [weakSelf = weak_from_this()]() {
+                auto self = weakSelf.lock();
+                return self && self->isOpen();
+            };
+            const bool audioOnly = json.value("audioOnly", false);
+            Logger::instance().info("WebSocket", "Processing WEBRTC_PROBE_START: reqId='{}'{}", json.value("requestId", ""), audioOnly ? " (sound only)" : "");
+            resourceManager_.webRtcProbe().start(json.value("requestId", ""), std::move(sink), audioOnly);
+
+        } else if (action == "WEBRTC_PROBE_ANSWER") {
+            resourceManager_.webRtcProbe().answer(json.value("requestId", ""), json.value("sdp", ""));
+
+        } else if (action == "WEBRTC_PROBE_STOP") {
+            resourceManager_.webRtcProbe().stop(json.value("requestId", ""));
+
+        } else if (action == "RADIO_DISCOVER" || action == "RADIO_SAVE_LOGO") {
+            RadioDiscovery::Sink sink;
+            sink.send = [weakSelf = weak_from_this()](const std::string& msg) {
+                if (auto self = weakSelf.lock()) self->send(msg);
+            };
+            sink.isConnected = [weakSelf = weak_from_this()]() {
+                auto self = weakSelf.lock();
+                return self && self->isOpen();
+            };
+            const std::string reqId = json.value("requestId", "");
+            const std::string url   = json.value("url", "");
+            Logger::instance().info("WebSocket", "Processing {}: url='{}', reqId='{}'", action, url, reqId);
+            if (action == "RADIO_DISCOVER") {
+                resourceManager_.radioDiscovery().discover(reqId, url, std::move(sink));
+            } else {
+                resourceManager_.radioDiscovery().saveLogo(reqId, url, json.value("targetDir", ""), json.value("name", ""), std::move(sink));
+            }
+
         } else if (action == "CONVERT_IMAGE") {
             ConvertImageRequest req;
             req.requestId       = json.value("requestId", "");

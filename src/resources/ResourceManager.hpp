@@ -1,6 +1,10 @@
 #pragma once
 
 #include "resources/Resource.hpp"
+#include "resources/VideoStreamer.hpp"
+#include "resources/RadioStreamer.hpp"
+#include "resources/RadioDiscovery.hpp"
+#include "resources/WebRtcProbe.hpp"
 #include <functional>
 #include <memory>
 
@@ -46,6 +50,18 @@ public:
 
     /// Gets current progress reporting thresholds.
     const ProgressConfig& getProgressConfig() const;
+
+    /// Progressive video for the Videos app (VIDEO_STREAM_* messages).
+    VideoStreamer& videoStreamer();
+
+    /// Live radio for the Radio app (RADIO_STREAM_* messages).
+    RadioStreamer& radioStreamer();
+
+    /// The Radio app's "Add station" (RADIO_DISCOVER, RADIO_SAVE_LOGO messages).
+    RadioDiscovery& radioDiscovery();
+
+    /// TEMPORARY in-game WebRTC check for the web apps (WEBRTC_PROBE_* messages).
+    WebRtcProbe& webRtcProbe();
 
 private:
     struct Impl;

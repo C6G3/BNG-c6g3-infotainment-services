@@ -8,7 +8,7 @@
 namespace ifs {
 
 /// Scanner that recursively scans directories, resolves shortcuts,
-/// extracts audio metadata/covers and image thumbnails.
+/// extracts audio metadata/covers, image thumbnails and video posters.
 class MediaScanner {
 public:
     MediaScanner() = default;
@@ -38,6 +38,16 @@ private:
     void processImageFile(const std::filesystem::path& filePath,
                           const ScanMediaRequest& request,
                           std::vector<ImageItemInfo>& outItems);
+
+    void processVideoFile(const std::filesystem::path& filePath,
+                          const ScanMediaRequest& request,
+                          std::vector<VideoItemInfo>& outVideos);
+
+    bool extractVideoInfoAndPoster(const std::filesystem::path& filePath,
+                                   const std::filesystem::path& thumbnailDir,
+                                   int maxWidth,
+                                   int maxHeight,
+                                   VideoItemInfo& outVideo);
 
     bool extractAudioMetadataAndCover(const std::filesystem::path& filePath,
                                       const std::filesystem::path& thumbnailDir,

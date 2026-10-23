@@ -61,6 +61,35 @@ struct ImageItemInfo {
     }
 };
 
+/// Represents extracted info and a generated poster thumbnail for a video item.
+struct VideoItemInfo {
+    std::string mediaType = "video";
+    std::string filename;
+    std::string title;
+    std::string category;
+    std::string path;
+    std::string thumbnailFile;
+    int width = 0;
+    int height = 0;
+    double duration = 0.0; // seconds, 0 when unknown
+    std::string format;
+
+    nlohmann::json toJson() const {
+        return {
+            {"mediaType",     mediaType},
+            {"filename",      filename},
+            {"title",         title},
+            {"category",      category},
+            {"path",          path},
+            {"thumbnailFile", thumbnailFile},
+            {"width",         width},
+            {"height",        height},
+            {"duration",      duration},
+            {"format",        format}
+        };
+    }
+};
+
 /// Parameters for SCAN_EXTERNAL_MEDIA request.
 struct ScanMediaRequest {
     std::string requestId;
@@ -79,9 +108,10 @@ struct ScanMediaResult {
     std::string targetPath;
     std::string status = "success"; // "success" or "error"
     std::string error;
-    std::string primaryMediaType = "audio"; // "audio" or "image"
+    std::string primaryMediaType = "audio"; // "audio", "image" or "video"
     std::vector<AudioTrackInfo> tracks;
     std::vector<ImageItemInfo> items;
+    std::vector<VideoItemInfo> videos;
 
     nlohmann::json toJson() const {
         nlohmann::json res = {
@@ -101,6 +131,10 @@ struct ScanMediaResult {
             for (const auto& item : items) {
                 itemArray.push_back(item.toJson());
             }
+        } else if (primaryMediaType == "video") {
+            for (const auto& v : videos) {
+                itemArray.push_back(v.toJson());
+            }
         } else {
             for (const auto& t : tracks) {
                 itemArray.push_back(t.toJson());
@@ -118,7 +152,7 @@ struct CacheMediaRequest {
     std::string sourcePath;
     std::string targetDir;
     std::string filename;
-    std::string mediaType; // "image", "audio", etc.
+    std::string mediaType; // "image", "audio", etc. (videos are streamed instead, see VideoStreamer)
 };
 
 /// Result of CACHE_EXTERNAL_MEDIA operation.

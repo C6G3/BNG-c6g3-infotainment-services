@@ -22,7 +22,9 @@ extern "C" {
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <ctime>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -138,16 +140,21 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request,
     result.requestId  = request.requestId;
     result.targetPath = request.targetPath;
 
-    // Determine mode: image vs audio
+    // Determine mode: image vs video vs audio
     bool isImageMode = false;
+    bool isVideoMode = false;
     for (const auto& t : request.mediaTypes) {
         std::string lt = toLower(t);
         if (lt == "image" || lt == "images" || lt == "picture" || lt == "pictures" || lt == "wallpaper" || lt == "wallpapers") {
             isImageMode = true;
             break;
         }
+        if (lt == "video" || lt == "videos") {
+            isVideoMode = true;
+            break;
+        }
     }
-    result.primaryMediaType = isImageMode ? "image" : "audio";
+    result.primaryMediaType = isImageMode ? "image" : (isVideoMode ? "video" : "audio");
 
     std::filesystem::path rawTarget(request.targetPath);
     ScanMediaRequest activeRequest = request;
@@ -184,7 +191,7 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request,
         if (extensionsSet.empty() || extensionsSet.count(fileExt)) {
             static const std::set<std::string> kImageExts = {"png", "jpg", "jpeg", "webp", "bmp", "dds", "tga", "tiff", "gif"};
 
-            if (!isImageMode && kImageExts.count(fileExt)) {
+            if (!isImageMode && !isVideoMode && kImageExts.count(fileExt)) {
                 isImageMode = true;
                 result.primaryMediaType = "image";
             }
@@ -211,11 +218,14 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request,
 
     std::vector<AudioTrackInfo> tracks;
     std::vector<ImageItemInfo> items;
+    std::vector<VideoItemInfo> videos;
 
     for (size_t i = 0; i < filesToProcess.size(); ++i) {
         const auto& entry = filesToProcess[i];
         if (isImageMode) {
             processImageFile(entry.path, entry.request, items);
+        } else if (isVideoMode) {
+            processVideoFile(entry.path, entry.request, videos);
         } else {
             processAudioFile(entry.path, entry.request, tracks);
         }
@@ -238,8 +248,9 @@ ScanMediaResult MediaScanner::scan(const ScanMediaRequest& request,
     result.status = "success";
     result.tracks = std::move(tracks);
     result.items  = std::move(items);
+    result.videos = std::move(videos);
 
-    size_t count = isImageMode ? result.items.size() : result.tracks.size();
+    size_t count = isImageMode ? result.items.size() : (isVideoMode ? result.videos.size() : result.tracks.size());
 
     Logger::instance().info("MediaScanner", "Scan complete for '{}' (mode={}): found {} item(s)",
                             request.targetPath, result.primaryMediaType, count);
@@ -613,6 +624,269 @@ bool MediaScanner::extractAndGenerateImageThumbnail(const std::filesystem::path&
     Logger::instance().debug("MediaScanner", "[Image] Could not decode image or generate thumbnail for '{}'", filePath.string());
     outItem.thumbnailFile = "";
     return false;
+}
+
+// ─── Video Processing & Poster Generation ────────────────────────────────────
+
+void MediaScanner::processVideoFile(const std::filesystem::path& filePath,
+                                    const ScanMediaRequest& request,
+                                    std::vector<VideoItemInfo>& outVideos) {
+    VideoItemInfo video;
+    video.mediaType = "video";
+    video.filename  = toUtf8(filePath.filename());
+    video.title     = toUtf8(filePath.stem());
+    video.path      = normalizePathSeparators(filePath);
+    video.format    = normalizeExtension(toUtf8(filePath.extension()));
+
+    // Category: the immediate folder of the file, like images (albums in the Videos app)
+    std::string folderName = toUtf8(filePath.parent_path().filename());
+    if (!folderName.empty()) {
+        video.category = folderName;
+    } else if (!request.category.empty()) {
+        video.category = request.category;
+    } else {
+        video.category = "Videos";
+    }
+
+    std::filesystem::path thumbDir(request.outputThumbnailDir);
+    int maxW = request.maxThumbnailWidth > 0 ? request.maxThumbnailWidth : 256;
+    int maxH = request.maxThumbnailHeight > 0 ? request.maxThumbnailHeight : 256;
+
+    // A file FFmpeg cannot open or decode cannot be converted either: it is left out of the library
+    if (!extractVideoInfoAndPoster(filePath, thumbDir, maxW, maxH, video)) {
+        Logger::instance().warn("MediaScanner", "[Video] Skipping '{}': not a readable video", video.path);
+        return;
+    }
+
+    Logger::instance().debug("MediaScanner", "[Video] Scanned '{}' ({}x{}, {:.1f}s, format='{}', poster='{}', category='{}')",
+                            video.filename, video.width, video.height, video.duration, video.format,
+                            video.thumbnailFile.empty() ? "none" : video.thumbnailFile, video.category);
+
+    outVideos.push_back(std::move(video));
+}
+
+namespace {
+
+// Posters written before embedded thumbnails were read (2026-10-22 17:28 UTC) are redone once for videos
+// that carry one
+constexpr std::time_t kEmbeddedPosterSince = 1792690127;
+
+// The thumbnail a video file carries: MP4/M4V cover art (an attached picture stream, what YouTube
+// downloaders embed) or an MKV/WebM image attachment (a "cover" one first, else the largest).
+bool findEmbeddedPicture(AVFormatContext* fmtCtx, const uint8_t*& data, int& size) {
+    data = nullptr;
+    size = 0;
+    int bestScore = -1;
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
+        const AVStream* st = fmtCtx->streams[i];
+        const uint8_t* d = nullptr;
+        int n = 0;
+        int score = 0;
+        if ((st->disposition & AV_DISPOSITION_ATTACHED_PIC) && st->attached_pic.data && st->attached_pic.size > 0) {
+            d = st->attached_pic.data;
+            n = st->attached_pic.size;
+            score = 2;
+        } else if (st->codecpar->codec_type == AVMEDIA_TYPE_ATTACHMENT && st->codecpar->extradata &&
+                   st->codecpar->extradata_size > 0) {
+            const AVDictionaryEntry* mime = av_dict_get(st->metadata, "mimetype", nullptr, 0);
+            if (!mime || std::string(mime->value).rfind("image/", 0) != 0) continue;
+            const AVDictionaryEntry* name = av_dict_get(st->metadata, "filename", nullptr, 0);
+            std::string lower = name ? name->value : "";
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+            d = st->codecpar->extradata;
+            n = st->codecpar->extradata_size;
+            score = (lower.find("cover") != std::string::npos && lower.find("small") == std::string::npos) ? 1 : 0;
+        } else {
+            continue;
+        }
+        if (score > bestScore || (score == bestScore && n > size)) {
+            data = d;
+            size = n;
+            bestScore = score;
+        }
+    }
+    return data != nullptr;
+}
+
+} // anonymous namespace
+
+// Poster = the thumbnail embedded in the file when there is one (findEmbeddedPicture), else the first frame
+// decoded after seeking to ~10% of the video (skips black intros / fade-ins).
+// A poster newer than its video is reused: rescans only read the header (size + duration).
+bool MediaScanner::extractVideoInfoAndPoster(const std::filesystem::path& filePath,
+                                             const std::filesystem::path& thumbnailDir,
+                                             int maxWidth,
+                                             int maxHeight,
+                                             VideoItemInfo& outVideo) {
+    const std::string thumbFileName = sanitizeThumbFilename(toUtf8(filePath.stem())) + "_vthumb.jpg";
+    const std::filesystem::path destThumb = thumbnailDir.empty() ? std::filesystem::path() : thumbnailDir / thumbFileName;
+
+    bool posterIsFresh = false;
+    bool posterPredatesEmbedded = false;
+    if (!destThumb.empty()) {
+        std::error_code ec1, ec2;
+        auto thumbTime = std::filesystem::last_write_time(destThumb, ec1);
+        auto srcTime   = std::filesystem::last_write_time(filePath, ec2);
+        posterIsFresh = !ec1 && !ec2 && thumbTime >= srcTime;
+        posterPredatesEmbedded = !ec1 && std::chrono::file_clock::to_sys(thumbTime) <
+                                         std::chrono::system_clock::from_time_t(kEmbeddedPosterSince);
+    }
+
+    AVFormatContext* fmtCtx = nullptr;
+    std::string utf8FilePath = toUtf8(filePath);
+    if (avformat_open_input(&fmtCtx, utf8FilePath.c_str(), nullptr, nullptr) < 0) {
+        Logger::instance().debug("MediaScanner", "[Video] Could not open '{}'", utf8FilePath);
+        return false;
+    }
+
+    // The picture stream, never the cover art (also a "video" stream in MP4)
+    auto findPictureStream = [&]() {
+        int idx = av_find_best_stream(fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        if (idx >= 0 && (fmtCtx->streams[idx]->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+            idx = -1;
+            for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
+                const AVStream* st = fmtCtx->streams[i];
+                if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && !(st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+                    idx = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        return idx;
+    };
+    int streamIdx = findPictureStream();
+    bool needProbe = streamIdx < 0 || fmtCtx->duration == AV_NOPTS_VALUE ||
+                     fmtCtx->streams[streamIdx]->codecpar->width <= 0;
+    if (needProbe && avformat_find_stream_info(fmtCtx, nullptr) >= 0) {
+        streamIdx = findPictureStream();
+    }
+    if (streamIdx < 0) {
+        Logger::instance().debug("MediaScanner", "[Video] No video stream in '{}'", utf8FilePath);
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+
+    AVCodecParameters* codecpar = fmtCtx->streams[streamIdx]->codecpar;
+    outVideo.width    = codecpar->width;
+    outVideo.height   = codecpar->height;
+    outVideo.duration = fmtCtx->duration != AV_NOPTS_VALUE
+        ? static_cast<double>(fmtCtx->duration) / AV_TIME_BASE : 0.0;
+
+    const uint8_t* embedded = nullptr;
+    int embeddedSize = 0;
+    const bool hasEmbedded = findEmbeddedPicture(fmtCtx, embedded, embeddedSize);
+
+    if (posterIsFresh && !(hasEmbedded && posterPredatesEmbedded)) {
+        outVideo.thumbnailFile = thumbFileName;
+        avformat_close_input(&fmtCtx);
+        return true;
+    }
+    if (destThumb.empty()) {
+        avformat_close_input(&fmtCtx);
+        return true;
+    }
+
+    // Scaled to fit maxWidth x maxHeight (never up) and written as the poster JPEG
+    auto writeScaled = [&](const uint8_t* const* srcData, const int* srcLinesize, int srcW, int srcH,
+                           AVPixelFormat srcFmt, const char* source) {
+        double scale = std::min(static_cast<double>(maxWidth) / srcW, static_cast<double>(maxHeight) / srcH);
+        if (scale > 1.0) scale = 1.0;
+        int targetW = std::max(1, static_cast<int>(std::floor(srcW * scale)));
+        int targetH = std::max(1, static_cast<int>(std::floor(srcH * scale)));
+
+        SwsContext* swsCtx = sws_getContext(srcW, srcH, srcFmt, targetW, targetH, AV_PIX_FMT_RGB24,
+                                            SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!swsCtx) return false;
+
+        std::vector<uint8_t> rgbBuf(targetW * targetH * 3);
+        uint8_t* dstData[4] = { rgbBuf.data(), nullptr, nullptr, nullptr };
+        int dstLinesize[4] = { targetW * 3, 0, 0, 0 };
+        sws_scale(swsCtx, srcData, srcLinesize, 0, srcH, dstData, dstLinesize);
+        sws_freeContext(swsCtx);
+
+        std::error_code ec;
+        std::filesystem::create_directories(thumbnailDir, ec);
+        if (stbi_write_jpg(destThumb.string().c_str(), targetW, targetH, 3, rgbBuf.data(), 85)) {
+            outVideo.thumbnailFile = thumbFileName;
+            Logger::instance().debug("MediaScanner", "[Video] Poster for '{}' from the {} (scaled: {}x{}) -> '{}'",
+                                    toUtf8(filePath.filename()), source, targetW, targetH, toUtf8(destThumb));
+            return true;
+        }
+        Logger::instance().warn("MediaScanner", "Failed to write video poster: {}", toUtf8(destThumb));
+        return false;
+    };
+
+    if (hasEmbedded) {
+        int w = 0, h = 0, channels = 0;
+        unsigned char* pixels = stbi_load_from_memory(embedded, embeddedSize, &w, &h, &channels, 3);
+        if (pixels && w > 0 && h > 0) {
+            const uint8_t* srcData[4] = { pixels, nullptr, nullptr, nullptr };
+            int srcLinesize[4] = { w * 3, 0, 0, 0 };
+            const bool written = writeScaled(srcData, srcLinesize, w, h, AV_PIX_FMT_RGB24, "embedded thumbnail");
+            stbi_image_free(pixels);
+            if (written) {
+                avformat_close_input(&fmtCtx);
+                return true;
+            }
+        } else {
+            // e.g. a WebP cover (stb reads JPEG / PNG): the frame below is used
+            if (pixels) stbi_image_free(pixels);
+            Logger::instance().debug("MediaScanner", "[Video] Embedded thumbnail of '{}' is not JPEG/PNG; using a frame", utf8FilePath);
+        }
+    }
+
+    const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
+    AVCodecContext* codecCtx = decoder ? avcodec_alloc_context3(decoder) : nullptr;
+    if (!codecCtx || avcodec_parameters_to_context(codecCtx, codecpar) < 0 || avcodec_open2(codecCtx, decoder, nullptr) < 0) {
+        Logger::instance().debug("MediaScanner", "[Video] No decoder for '{}'", utf8FilePath);
+        avcodec_free_context(&codecCtx);
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+
+    if (outVideo.duration > 1.0) {
+        int64_t start  = fmtCtx->start_time != AV_NOPTS_VALUE ? fmtCtx->start_time : 0;
+        int64_t target = start + static_cast<int64_t>(outVideo.duration * 0.10 * AV_TIME_BASE);
+        if (av_seek_frame(fmtCtx, -1, target, AVSEEK_FLAG_BACKWARD) < 0) {
+            av_seek_frame(fmtCtx, -1, start, AVSEEK_FLAG_BACKWARD);
+        }
+    }
+
+    AVPacket* pkt   = av_packet_alloc();
+    AVFrame*  frame = av_frame_alloc();
+    bool frameDecoded = false;
+    int  packetsRead  = 0;
+    constexpr int kMaxPackets = 600; // a broken file must not stall the scan
+
+    auto writePoster = [&]() {
+        writeScaled(frame->data, frame->linesize, frame->width, frame->height,
+                    static_cast<AVPixelFormat>(frame->format), "frame at ~10%");
+    };
+
+    while (!frameDecoded && packetsRead < kMaxPackets && av_read_frame(fmtCtx, pkt) >= 0) {
+        ++packetsRead;
+        if (pkt->stream_index == streamIdx && avcodec_send_packet(codecCtx, pkt) >= 0 &&
+            avcodec_receive_frame(codecCtx, frame) >= 0) {
+            writePoster();
+            frameDecoded = true;
+        }
+        av_packet_unref(pkt);
+    }
+    // Decoders with delay (frame threads, B-frames) hold the first frame until flushed
+    if (!frameDecoded && avcodec_send_packet(codecCtx, nullptr) >= 0 && avcodec_receive_frame(codecCtx, frame) >= 0) {
+        writePoster();
+        frameDecoded = true;
+    }
+
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&codecCtx);
+    avformat_close_input(&fmtCtx);
+
+    if (!frameDecoded) {
+        Logger::instance().debug("MediaScanner", "[Video] Could not decode a poster frame for '{}'", utf8FilePath);
+    }
+    return true;
 }
 
 } // namespace ifs
