@@ -5,11 +5,14 @@
 #include "tts/TtsService.hpp"
 #include "core/Logger.hpp"
 #include "core/Types.hpp"
+#include "core/UserData.hpp"
 
 #include <boost/beast/http/field.hpp>
 #include <boost/asio/post.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <filesystem>
+#include <thread>
 
 namespace beast     = boost::beast;
 namespace websocket = beast::websocket;
@@ -17,6 +20,27 @@ namespace http      = beast::http;
 namespace net       = boost::asio;
 
 namespace ifs {
+
+namespace {
+// The web apps' browser profiles (Chrome / Edge, Brave): every sign-in, cookie and cache of the web apps. Their browser
+// is closed first by the caller; its last processes may hold files a moment longer. True when both are gone
+bool deleteWebAppProfiles() {
+    bool ok = true;
+    for (const char* name : {"profile", "profile_brave"}) {
+        const auto profile = userDataDir() / "webapp" / name;
+        std::error_code ec;
+        for (int i = 0; i < 20 && std::filesystem::exists(profile, ec); i++) {
+            std::filesystem::remove_all(profile, ec);
+            if (ec) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        if (std::filesystem::exists(profile, ec)) {
+            ok = false;
+            Logger::instance().warn("WebSocket", "The web app profile '{}' could not be deleted: {}", name, ec.message());
+        }
+    }
+    return ok;
+}
+} // namespace
 
 WebSocketSession::WebSocketSession(net::ip::tcp::socket socket,
                                    ConnectionManager& manager,
@@ -96,7 +120,9 @@ void WebSocketSession::onRead(beast::error_code ec, std::size_t /*bytes*/) {
     std::string message = beast::buffers_to_string(buffer_.data());
     buffer_.consume(buffer_.size());
 
-    Logger::instance().debug("WebSocket", "[IN] {}", message);
+    // (the app lock's messages carry a password: never logged)
+    if (message.find("\"APPLOCK_") != std::string::npos) Logger::instance().debug("WebSocket", "[IN] app lock message");
+    else Logger::instance().debug("WebSocket", "[IN] {}", message);
 
     onMessage(message);
     doRead();
@@ -261,6 +287,148 @@ void WebSocketSession::onMessage(const std::string& message) {
         } else if (action == "WEBRTC_PROBE_STOP") {
             resourceManager_.webRtcProbe().stop(json.value("requestId", ""));
 
+        } else if (action == "WEBAPP_OPEN" || action == "WEBAPP_SOUND_ATTACH") {
+            WebAppHost::Sink sink;
+            sink.send = [weakSelf = weak_from_this()](const std::string& msg) {
+                if (auto self = weakSelf.lock()) self->send(msg);
+            };
+            sink.isConnected = [weakSelf = weak_from_this()]() {
+                auto self = weakSelf.lock();
+                return self && self->isOpen();
+            };
+            const std::string reqId = json.value("requestId", "");
+            if (action == "WEBAPP_OPEN") {
+                const std::string url = json.value("url", "");
+                Logger::instance().info("WebSocket", "Processing WEBAPP_OPEN: url='{}', reqId='{}'", url, reqId);
+                // A locked app (security/AppLock.hpp) starts only with an unlock token; the one already running
+                // (a reloaded screen takes it back) stays unlocked until it closes
+                const std::string running = resourceManager_.webAppHost().runningUrl();
+                const bool reopening = !running.empty() && AppLock::appIdForUrl(running) == AppLock::appIdForUrl(url);
+                // The browser's desktop window (WEBAPP_DESKTOP: signing in) holds the profile until it is closed
+                if (resourceManager_.webAppHost().desktopWindowOpen()) {
+                    send(nlohmann::json{{"event", "WEBAPP_ERROR"}, {"requestId", reqId}, {"desktop", true},
+                                        {"error", "The browser is open on your desktop. Close that window, then open the app again."}}.dump());
+                    return;
+                }
+                if (!reopening && !resourceManager_.appLock().mayOpen(url, json.value("unlock", ""))) {
+                    Logger::instance().warn("WebSocket", "WEBAPP_OPEN refused: '{}' is locked", url);
+                    send(nlohmann::json{{"event", "WEBAPP_ERROR"}, {"requestId", reqId}, {"locked", true},
+                                        {"error", "This app is locked."}}.dump());
+                    return;
+                }
+                resourceManager_.webAppHost().open(reqId, url, json.value("titleMatch", ""), json.value("siteMode", ""), json.value("height", 0), json.value("chromeFirst", false), json.value("fill", ""), json.value("press", ""), json.value("pointer", "") == "mouse", std::move(sink));
+            } else {
+                Logger::instance().info("WebSocket", "Processing WEBAPP_SOUND_ATTACH: reqId='{}'", reqId);
+                resourceManager_.webAppHost().attachSound(reqId, std::move(sink));
+            }
+
+        } else if (action == "WEBAPP_ANSWER") {
+            resourceManager_.webAppHost().answer(json.value("requestId", ""), json.value("to", ""), json.value("sdp", ""));
+
+        } else if (action == "WEBAPP_INPUT") {
+            resourceManager_.webAppHost().input(json.value("requestId", ""), json.dump());
+
+        } else if (action == "WEBAPP_NAV") {
+            // (no way into a locked app through another one's address bar)
+            if (json.value("nav", "") == "url" && resourceManager_.appLock().isLockedUrl(json.value("url", ""))) {
+                Logger::instance().warn("WebSocket", "WEBAPP_NAV refused: '{}' is locked", json.value("url", ""));
+                return;
+            }
+            resourceManager_.webAppHost().navigate(json.value("requestId", ""), json.value("nav", ""), json.value("url", ""));
+
+        } else if (action.rfind("APPLOCK_", 0) == 0) {
+            // The app lock (security/AppLock.hpp): hashing a password takes ~0.5 s, so off this connection's thread
+            const std::string reqId = json.value("requestId", "");
+            ResourceManager& rm = resourceManager_;
+            rm.runAsync([&rm, action, json, reqId, weakSelf = weak_from_this()]() {
+                AppLock& lock = rm.appLock();
+                const std::string password = json.value("password", "");
+                const auto locked = json.contains("locked") && json["locked"].is_array()
+                    ? json["locked"].get<std::vector<std::string>>() : std::vector<std::string>{};
+                nlohmann::json r;
+                if (action == "APPLOCK_STATUS") r = lock.status();
+                else if (action == "APPLOCK_SETUP") r = lock.setup(password, locked);
+                else if (action == "APPLOCK_UNLOCK") r = lock.unlock(password, json.value("appId", ""));
+                else if (action == "APPLOCK_CHANGE") r = lock.change(password, json.value("newPassword", ""));
+                else if (action == "APPLOCK_SET_LOCKED") r = lock.setLocked(password, locked);
+                else if (action == "APPLOCK_RESET") {
+                    // Signs the web apps out: their browser (closed first) and its profiles (Chrome / Edge, Brave)
+                    // go with the password
+                    rm.webAppHost().closeAll();
+                    deleteWebAppProfiles();
+                    r = lock.reset();
+                } else r = {{"ok", false}, {"error", "Unknown app lock action"}};
+                r["event"] = "APPLOCK_RESULT";
+                r["requestId"] = reqId;
+                r["action"] = action;
+                if (auto self = weakSelf.lock()) self->send(r.dump());
+            });
+
+        } else if (action == "WEBAPP_CLEAR_DATA") {
+            // Settings > Clear browser data: the web apps' browser profiles go (every sign-in, cookie, cache and saved
+            // game progress of YouTube, Spotify, Discord, Poki...). The running web app closes first; the desktop
+            // window (WEBAPP_DESKTOP) holds the profile, so it has to be closed by the user
+            const std::string reqId = json.value("requestId", "");
+            ResourceManager& rm = resourceManager_;
+            rm.runAsync([&rm, reqId, weakSelf = weak_from_this()]() {
+                nlohmann::json r{{"event", "WEBAPP_CLEAR_DATA_RESULT"}, {"requestId", reqId}};
+                if (rm.webAppHost().desktopWindowOpen()) {
+                    r["ok"] = false;
+                    r["error"] = "Close the browser window on your desktop first.";
+                } else {
+                    rm.webAppHost().closeAll();
+                    const bool ok = deleteWebAppProfiles();
+                    r["ok"] = ok;
+                    if (!ok) r["error"] = "Some files are in use. Close the web app and try again.";
+                    Logger::instance().info("WebSocket", "WEBAPP_CLEAR_DATA: {}", ok ? "the web app profiles are deleted" : "some files stayed");
+                }
+                if (auto self = weakSelf.lock()) self->send(r.dump());
+            });
+
+        } else if (action == "WEBAPP_DESKTOP") {
+            // A visible window of the web apps' browser on the desktop (signing in where the hidden browser is refused:
+            // Google). Closing the running web app waits for its browser, so off this connection's thread
+            const std::string reqId = json.value("requestId", "");
+            const std::string url = json.value("url", "");
+            const bool chromeFirst = json.value("chromeFirst", false);
+            ResourceManager& rm = resourceManager_;
+            if (url.rfind("https://", 0) != 0 || rm.appLock().isLockedUrl(url)) {
+                send(nlohmann::json{{"event", "WEBAPP_DESKTOP_RESULT"}, {"requestId", reqId}, {"ok", false}, {"error", "Not allowed"}}.dump());
+                return;
+            }
+            rm.runAsync([&rm, reqId, url, chromeFirst, weakSelf = weak_from_this()]() {
+                const std::string error = rm.webAppHost().openOnDesktop(url, chromeFirst);
+                nlohmann::json r{{"event", "WEBAPP_DESKTOP_RESULT"}, {"requestId", reqId}, {"ok", error.empty()}};
+                if (!error.empty()) r["error"] = error;
+                if (auto self = weakSelf.lock()) self->send(r.dump());
+            });
+
+        } else if (action == "WEBAPP_CAST") {
+            resourceManager_.webAppHost().cast(json.value("requestId", ""), json.value("screen", ""), json.value("on", false));
+
+        } else if (action == "WEBAPP_CLOSE") {
+            Logger::instance().info("WebSocket", "Processing WEBAPP_CLOSE: reqId='{}'", json.value("requestId", ""));
+            resourceManager_.webAppHost().close(json.value("requestId", ""));
+
+        } else if (action == "AUX_START") {
+            AuxCapture::Sink sink;
+            sink.send = [weakSelf = weak_from_this()](const std::string& msg) {
+                if (auto self = weakSelf.lock()) self->send(msg);
+            };
+            sink.isConnected = [weakSelf = weak_from_this()]() {
+                auto self = weakSelf.lock();
+                return self && self->isOpen();
+            };
+            Logger::instance().info("WebSocket", "Processing AUX_START: reqId='{}', input='{}'", json.value("requestId", ""), json.value("deviceLabel", ""));
+            resourceManager_.auxCapture().start(json.value("requestId", ""), json.value("deviceLabel", ""), std::move(sink));
+
+        } else if (action == "AUX_ANSWER") {
+            resourceManager_.auxCapture().answer(json.value("requestId", ""), json.value("sdp", ""));
+
+        } else if (action == "AUX_STOP") {
+            Logger::instance().info("WebSocket", "Processing AUX_STOP: reqId='{}'", json.value("requestId", ""));
+            resourceManager_.auxCapture().stop(json.value("requestId", ""));
+
         } else if (action == "RADIO_DISCOVER" || action == "RADIO_SAVE_LOGO") {
             RadioDiscovery::Sink sink;
             sink.send = [weakSelf = weak_from_this()](const std::string& msg) {
@@ -289,9 +457,15 @@ void WebSocketSession::onMessage(const std::string& message) {
             req.lossless        = json.value("lossless", false);
             req.level           = json.value("level", "");
             req.keepSource      = json.value("keepSource", true);
+            if (json.contains("tiles") && json["tiles"].is_array()) {
+                for (const auto& tile : json["tiles"]) {
+                    if (tile.is_string()) req.tiles.push_back(tile.get<std::string>());
+                }
+                req.tileColumns = json.value("tileColumns", 0);
+            }
 
-            Logger::instance().info("WebSocket", "Processing CONVERT_IMAGE: src='{}', dst='{}', targetFormat='{}', quality={}, lossless={}, level='{}', keepSource={}, reqId='{}'",
-                                    req.sourcePath, req.destinationPath, req.targetFormat, req.quality, req.lossless, req.level, req.keepSource, req.requestId);
+            Logger::instance().info("WebSocket", "Processing CONVERT_IMAGE: src='{}', dst='{}', targetFormat='{}', quality={}, lossless={}, level='{}', keepSource={}, tiles={} ({} per row), reqId='{}'",
+                                    req.sourcePath, req.destinationPath, req.targetFormat, req.quality, req.lossless, req.level, req.keepSource, req.tiles.size(), req.tileColumns, req.requestId);
 
             // Progress callback forwarding OPERATION_PROGRESS events to the client
             auto onProgress = [weakSelf = weak_from_this()](const OperationProgress& prog) {

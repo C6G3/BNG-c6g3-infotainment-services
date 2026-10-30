@@ -68,3 +68,6 @@ assistant/voice-engine/*/
 assistant/.cache/
 *.onnx
 *.gguf
+
+# Local working backups (pre-change copies)
+scratch/

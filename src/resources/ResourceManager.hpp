@@ -5,6 +5,9 @@
 #include "resources/RadioStreamer.hpp"
 #include "resources/RadioDiscovery.hpp"
 #include "resources/WebRtcProbe.hpp"
+#include "resources/WebAppHost.hpp"
+#include "resources/AuxCapture.hpp"
+#include "security/AppLock.hpp"
 #include <functional>
 #include <memory>
 
@@ -62,6 +65,18 @@ public:
 
     /// TEMPORARY in-game WebRTC check for the web apps (WEBRTC_PROBE_* messages).
     WebRtcProbe& webRtcProbe();
+
+    /// Web apps (YouTube) in the user's hidden browser, streamed over WebRTC (WEBAPP_* messages).
+    WebAppHost& webAppHost();
+
+    /// The Aux app's VB-CABLE input, captured by the hidden browser and streamed over WebRTC (AUX_* messages).
+    AuxCapture& auxCapture();
+
+    /// The app lock's password for the protected web apps (APPLOCK_* messages).
+    AppLock& appLock();
+
+    /// Runs a job on a worker thread (the app lock's password hashing takes about half a second).
+    void runAsync(std::function<void()> job);
 
 private:
     struct Impl;

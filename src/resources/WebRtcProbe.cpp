@@ -1,5 +1,6 @@
 #include "resources/WebRtcProbe.hpp"
 #include "core/Logger.hpp"
+#include "core/UserData.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
@@ -78,12 +79,6 @@ std::wstring findBrowser() {
         if (std::filesystem::exists(g)) return g;
     }
     return L"";
-}
-
-std::filesystem::path exeDir() {
-    wchar_t buf[MAX_PATH * 2] = {};
-    const DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
-    return std::filesystem::path(std::wstring(buf, n)).parent_path();
 }
 #endif
 
@@ -266,7 +261,7 @@ struct WebRtcProbe::Session : std::enable_shared_from_this<WebRtcProbe::Session>
             error("Google Chrome (or Microsoft Edge) was not found");
             return false;
         }
-        const std::filesystem::path profile = exeDir() / "webapp" / "probe_profile";
+        const std::filesystem::path profile = userDataDir() / "webapp" / "probe_profile"; // core/UserData.hpp
         std::error_code ec;
         std::filesystem::create_directories(profile, ec);
         std::filesystem::remove(profile / "DevToolsActivePort", ec);

@@ -12,6 +12,8 @@
 #include <vector>
 #include <algorithm>
 #include <fstream>
+#include <cstdlib>
+#include <cstring>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -21,6 +23,72 @@
 namespace ifs {
 
 namespace {
+
+bool readWholeFile(const std::filesystem::path& path, std::vector<unsigned char>& out) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) return false;
+    const std::streamsize size = file.tellg();
+    if (size <= 0) return false;
+    file.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(size));
+    return static_cast<bool>(file.read(reinterpret_cast<char*>(out.data()), size));
+}
+
+// Pieces of one image, row by row (`columns` per row, all the same size), stitched into one RGB image. The
+// satellite capture renders the map as a grid of smaller views: one 4096 px view ran integrated GPUs out of
+// memory. The result is malloc'd (freed with stbi_image_free, like a decoded image).
+unsigned char* stitchTiles(const std::vector<std::string>& tiles, int columns, int& outW, int& outH, std::string& error) {
+    const int count = static_cast<int>(tiles.size());
+    if (columns <= 0 || count % columns != 0) {
+        error = "tileColumns does not divide the number of tiles";
+        return nullptr;
+    }
+    const int rows = count / columns;
+    int tileW = 0, tileH = 0;
+    unsigned char* out = nullptr;
+    std::vector<unsigned char> buffer;
+    for (int i = 0; i < count; ++i) {
+        if (!readWholeFile(std::filesystem::path(tiles[i]), buffer)) {
+            std::free(out);
+            error = "Tile not found or unreadable: " + tiles[i];
+            return nullptr;
+        }
+        int w = 0, h = 0, n = 0;
+        unsigned char* px = stbi_load_from_memory(buffer.data(), static_cast<int>(buffer.size()), &w, &h, &n, 3);
+        if (!px) {
+            std::free(out);
+            error = "Failed to decode tile: " + tiles[i];
+            return nullptr;
+        }
+        if (i == 0) {
+            tileW = w;
+            tileH = h;
+            out = static_cast<unsigned char*>(std::malloc(static_cast<size_t>(tileW) * columns * tileH * rows * 3));
+            if (!out) {
+                stbi_image_free(px);
+                error = "Out of memory stitching the tiles";
+                return nullptr;
+            }
+        } else if (w != tileW || h != tileH) {
+            stbi_image_free(px);
+            std::free(out);
+            error = "Tiles differ in size: " + tiles[i];
+            return nullptr;
+        }
+        const int col = i % columns;
+        const int row = i / columns;
+        const size_t rowBytes = static_cast<size_t>(tileW) * 3;
+        const size_t outStride = rowBytes * columns;
+        for (int y = 0; y < tileH; ++y) {
+            std::memcpy(out + static_cast<size_t>(row * tileH + y) * outStride + col * rowBytes,
+                        px + static_cast<size_t>(y) * rowBytes, rowBytes);
+        }
+        stbi_image_free(px);
+    }
+    outW = tileW * columns;
+    outH = tileH * rows;
+    return out;
+}
 
 std::string toUtf8(const std::filesystem::path& path) {
 #if defined(_WIN32)
@@ -88,6 +156,9 @@ struct ResourceManager::Impl {
     RadioStreamer  radioStreamer; // same
     RadioDiscovery radioDiscovery; // its destructor waits for the searches
     WebRtcProbe    webRtcProbe;    // its destructor closes Chrome
+    WebAppHost     webAppHost;     // same
+    AuxCapture     auxCapture;     // same
+    AppLock        appLock;
 
     ~Impl() {
         std::lock_guard lock(workersMutex);
@@ -127,6 +198,32 @@ RadioDiscovery& ResourceManager::radioDiscovery() {
 
 WebRtcProbe& ResourceManager::webRtcProbe() {
     return impl_->webRtcProbe;
+}
+
+WebAppHost& ResourceManager::webAppHost() {
+    return impl_->webAppHost;
+}
+
+AuxCapture& ResourceManager::auxCapture() {
+    return impl_->auxCapture;
+}
+
+AppLock& ResourceManager::appLock() {
+    return impl_->appLock;
+}
+
+void ResourceManager::runAsync(std::function<void()> job) {
+    std::thread worker(std::move(job));
+    std::lock_guard lock(impl_->workersMutex);
+    auto it = impl_->workers.begin();
+    while (it != impl_->workers.end()) {
+        if (!it->joinable()) {
+            it = impl_->workers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    impl_->workers.push_back(std::move(worker));
 }
 
 void ResourceManager::scanExternalMediaAsync(const ScanMediaRequest& request,
@@ -319,7 +416,10 @@ ConvertImageResult ResourceManager::convertImage(const ConvertImageRequest& requ
         }
     }
 
-    if (!std::filesystem::exists(src) || !std::filesystem::is_regular_file(src)) {
+    // Tiles: the image is stitched from them, and sourcePath only names it (it does not exist)
+    const bool tiled = !request.tiles.empty();
+
+    if (!tiled && (!std::filesystem::exists(src) || !std::filesystem::is_regular_file(src))) {
         Logger::instance().warn("ResourceManager", "Source file not found for conversion: {}", request.sourcePath);
         result.status = "error";
         result.error  = "Source file does not exist or is not a regular file";
@@ -327,8 +427,17 @@ ConvertImageResult ResourceManager::convertImage(const ConvertImageRequest& requ
     }
 
     std::error_code ec;
-    uint64_t totalBytes = std::filesystem::file_size(src, ec);
-    if (ec) totalBytes = 0;
+    uint64_t totalBytes = 0;
+    if (tiled) {
+        for (const auto& tile : request.tiles) {
+            const auto size = std::filesystem::file_size(std::filesystem::path(tile), ec);
+            if (!ec) totalBytes += size;
+        }
+        ec.clear();
+    } else {
+        totalBytes = std::filesystem::file_size(src, ec);
+        if (ec) totalBytes = 0;
+    }
 
     const bool shouldReportProgress = onProgress && (totalBytes >= impl_->progressConfig.minFileSizeBytes);
 
@@ -344,38 +453,54 @@ ConvertImageResult ResourceManager::convertImage(const ConvertImageRequest& requ
         onProgress(prog);
     }
 
-    // Read source file into memory
-    std::vector<unsigned char> srcBuffer;
-    {
-        std::ifstream file(src, std::ios::binary | std::ios::ate);
-        if (!file.is_open()) {
-            result.status = "error";
-            result.error  = "Failed to open source file for reading";
-            return result;
-        }
-        std::streamsize size = file.tellg();
-        if (size <= 0) {
-            result.status = "error";
-            result.error  = "Source file is empty";
-            return result;
-        }
-        file.seekg(0, std::ios::beg);
-        srcBuffer.resize(static_cast<size_t>(size));
-        if (!file.read(reinterpret_cast<char*>(srcBuffer.data()), size)) {
-            result.status = "error";
-            result.error  = "Failed to read source file content";
-            return result;
-        }
-    }
-
     int width = 0, height = 0, channels = 0;
-    unsigned char* imgData = stbi_load_from_memory(srcBuffer.data(), static_cast<int>(srcBuffer.size()), &width, &height, &channels, 0);
+    unsigned char* imgData = nullptr;
 
-    // If STB failed, attempt WebP decode if source is WebP
-    if (!imgData) {
-        imgData = WebPDecodeRGBA(srcBuffer.data(), srcBuffer.size(), &width, &height);
-        if (imgData) {
-            channels = 4;
+    if (tiled) {
+        std::string tileError;
+        imgData = stitchTiles(request.tiles, request.tileColumns, width, height, tileError);
+        if (!imgData) {
+            Logger::instance().error("ResourceManager", "Failed to stitch {} tiles for '{}': {}", request.tiles.size(), request.sourcePath, tileError);
+            result.status = "error";
+            result.error  = tileError;
+            return result;
+        }
+        channels = 3;
+        Logger::instance().info("ResourceManager", "Stitched {} tiles ({} per row) into {}x{} for '{}'",
+                                request.tiles.size(), request.tileColumns, width, height, request.sourcePath);
+    } else {
+        // Read source file into memory
+        std::vector<unsigned char> srcBuffer;
+        {
+            std::ifstream file(src, std::ios::binary | std::ios::ate);
+            if (!file.is_open()) {
+                result.status = "error";
+                result.error  = "Failed to open source file for reading";
+                return result;
+            }
+            std::streamsize size = file.tellg();
+            if (size <= 0) {
+                result.status = "error";
+                result.error  = "Source file is empty";
+                return result;
+            }
+            file.seekg(0, std::ios::beg);
+            srcBuffer.resize(static_cast<size_t>(size));
+            if (!file.read(reinterpret_cast<char*>(srcBuffer.data()), size)) {
+                result.status = "error";
+                result.error  = "Failed to read source file content";
+                return result;
+            }
+        }
+
+        imgData = stbi_load_from_memory(srcBuffer.data(), static_cast<int>(srcBuffer.size()), &width, &height, &channels, 0);
+
+        // If STB failed, attempt WebP decode if source is WebP
+        if (!imgData) {
+            imgData = WebPDecodeRGBA(srcBuffer.data(), srcBuffer.size(), &width, &height);
+            if (imgData) {
+                channels = 4;
+            }
         }
     }
 
@@ -501,8 +626,12 @@ ConvertImageResult ResourceManager::convertImage(const ConvertImageRequest& requ
     }
     WebPFree(webpData);
 
-    // If keepSource is false and src != dst, remove source file
-    if (!request.keepSource && std::filesystem::weakly_canonical(src, ec) != std::filesystem::weakly_canonical(dst, ec)) {
+    // If keepSource is false and src != dst, remove source file (the tiles, for a stitched image)
+    if (!request.keepSource && tiled) {
+        for (const auto& tile : request.tiles) {
+            std::filesystem::remove(std::filesystem::path(tile), ec);
+        }
+    } else if (!request.keepSource && std::filesystem::weakly_canonical(src, ec) != std::filesystem::weakly_canonical(dst, ec)) {
         std::filesystem::remove(src, ec);
     }
 

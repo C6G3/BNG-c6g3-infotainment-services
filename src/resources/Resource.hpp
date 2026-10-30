@@ -233,6 +233,10 @@ struct ConvertImageRequest {
     bool lossless = false;
     std::string level;
     bool keepSource = true;
+    /// Optional: pieces of the image, row by row, all the same size (`tileColumns` per row). Stitched into one image
+    /// and encoded to destinationPath; sourcePath then only names the result. keepSource false deletes the tiles.
+    std::vector<std::string> tiles;
+    int tileColumns = 0;
 };
 
 /// Inner data structure for successful image conversion result.
