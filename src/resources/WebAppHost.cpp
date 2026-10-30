@@ -265,6 +265,33 @@ const char* kControllerScript = R"JS((() => {
 // Full screen stays inside the page: the element fills the page and the site is told it is full screen. The
 // browser's own full screen changed the page's shape (960x810, 711x600, ...) and the picture shrank on the screen.
 // YouTube's "Something went wrong" (videos it stops after ~45 s) is covered by a message + Next video button.
+// Mouse look for a desktop game (session mouse; the screen's mouse bypass, WEBAPP_INPUT look): headless Chrome refuses
+// pointer lock ("not valid for pointer lock"), so it is granted here, in every frame, and the real mouse's movement
+// arrives as mousemove events with movementX / movementY. A frame passes it on to its own frames (the game is in
+// one, often on another origin) by message; it fires it itself when it holds the lock or has no frames
+const char* kMouseLookScript = R"JS((() => {
+  let locked = null
+  const changed = () => { document.dispatchEvent(new Event('pointerlockchange', { bubbles: true })) }
+  Element.prototype.requestPointerLock = function () { locked = this; setTimeout(changed, 0); return Promise.resolve() }
+  Document.prototype.exitPointerLock = function () { if (locked) { locked = null; setTimeout(changed, 0) } }
+  Object.defineProperty(Document.prototype, 'pointerLockElement', {
+    get () { return locked && locked.isConnected && locked.ownerDocument === this ? locked : null }, configurable: true })
+  const look = (dx, dy) => {
+    const held = locked && locked.isConnected
+    if (held || frames.length === 0) {
+      const t = held ? locked : (document.activeElement || document.body || document.documentElement)
+      if (t) t.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, composed: true, view: window,
+        movementX: dx, movementY: dy, clientX: innerWidth / 2, clientY: innerHeight / 2 }))
+    }
+    for (let i = 0; i < frames.length; i++) { try { frames[i].postMessage({ c6g3Look: [dx, dy] }, '*') } catch (e) {} }
+  }
+  window.__c6g3Look = look
+  addEventListener('message', (e) => {
+    const d = e.data
+    if (e.source === parent && d && Array.isArray(d.c6g3Look)) look(Number(d.c6g3Look[0]) || 0, Number(d.c6g3Look[1]) || 0)
+  })
+})())JS";
+
 const char* kPageScript = R"JS((() => {
   if (window !== window.top) return
   const tell = (o) => { try { window.c6g3Page(JSON.stringify(o)) } catch (e) {} }
@@ -667,6 +694,7 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
     std::string fill;                 // a CSS selector: that element fills the page (kPageScript)
     std::string press;                // a CSS selector: that button is pressed once it appears (kPageScript)
     bool mouse = false;               // a desktop game: taps go as a mouse, the page has no touchscreen (input)
+    bool incognito = false;           // a private session (the Chrome app): a throwaway profile, wiped before and after
     Sink screen;
     Sink sound;
     bool soundAttached = false;
@@ -1120,6 +1148,12 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
                 call("Input.dispatchKeyEvent", {{"type", "keyUp"}, {"key", k.key}, {"code", k.code}, {"windowsVirtualKeyCode", k.vk}, {"nativeVirtualKeyCode", k.vk}}, appSession);
                 break;
             }
+        } else if (kind == "look" && mouse) {
+            // The real mouse's movement (the screen's mouse bypass) for the game's mouse look (kMouseLookScript)
+            const double dx = std::clamp(in.value("dx", 0.0), -2000.0, 2000.0), dy = std::clamp(in.value("dy", 0.0), -2000.0, 2000.0);
+            char expr[160];
+            std::snprintf(expr, sizeof(expr), "window.__c6g3Look&&window.__c6g3Look(%.2f,%.2f)", dx, dy);
+            evaluate(appSession, expr);
         } else if (kind == "wheel") {
             call("Input.dispatchMouseEvent", {{"type", "mouseWheel"}, {"x", x}, {"y", y}, {"deltaX", in.value("dx", 0.0)}, {"deltaY", in.value("dy", 0.0)}}, appSession);
         } else if (kind == "rawkey") {
@@ -1191,9 +1225,11 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
         }
         // The user's sign-ins live in their own app data, not next to the service (core/UserData.hpp); one profile
         // per browser family
-        const std::filesystem::path profile = userDataDir() / "webapp" / browser.profile;
+        // A private session gets its own empty profile: nothing of the web apps' sign-ins, nothing kept after it
+        const std::filesystem::path profile = userDataDir() / "webapp" / (incognito ? std::string("private") : browser.profile);
         profileDir = profile;
         std::error_code ec;
+        if (incognito) std::filesystem::remove_all(profile, ec);
         std::filesystem::create_directories(profile, ec);
         std::filesystem::remove(profile / "DevToolsActivePort", ec);
         // (Component updates stay on: they bring Widevine, which Spotify's player needs; without them it is
@@ -1328,6 +1364,7 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
                     call("Page.addScriptToEvaluateOnNewDocument", {{"source", "window.__c6g3Fill = " + dumpJson(fill)}}, appSession);
                 if (!press.empty())
                     call("Page.addScriptToEvaluateOnNewDocument", {{"source", "window.__c6g3Press = " + dumpJson(press)}}, appSession);
+                if (mouse) call("Page.addScriptToEvaluateOnNewDocument", {{"source", kMouseLookScript}}, appSession);
                 call("Page.addScriptToEvaluateOnNewDocument", {{"source", kPageScript}}, appSession);
                 call("Page.navigate", {{"url", url}}, appSession);
                 openController();
@@ -1393,6 +1430,19 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
             job = nullptr;
         }
 #endif
+        // Files can stay locked for a moment after the browser's processes end: try again for up to ~4 s (the next
+        // private session also starts by wiping the folder)
+        if (incognito && !profileDir.empty()) {
+            std::error_code rmEc;
+            for (int i = 0; i < 20; ++i) {
+                rmEc.clear();
+                std::filesystem::remove_all(profileDir, rmEc);
+                if (!std::filesystem::exists(profileDir)) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            if (std::filesystem::exists(profileDir))
+                Logger::instance().warn("WebAppHost", "'{}': the private profile could not be deleted yet: {}", requestId, rmEc.message());
+        }
         Logger::instance().info("WebAppHost", "'{}': closed, browser stopped", requestId);
         json j = {{"event", "WEBAPP_CLOSED"}};
         toScreen(j);
@@ -1429,7 +1479,7 @@ std::shared_ptr<WebAppHost::Session> WebAppHost::current(const std::string& requ
     return session_;
 }
 
-void WebAppHost::open(const std::string& requestId, const std::string& url, const std::string& titleMatch, const std::string& siteMode, int height, bool chromeFirst, const std::string& fill, const std::string& press, bool mouse, Sink screen) {
+void WebAppHost::open(const std::string& requestId, const std::string& url, const std::string& titleMatch, const std::string& siteMode, int height, bool chromeFirst, const std::string& fill, const std::string& press, bool mouse, bool incognito, Sink screen) {
     const std::string match = titleMatch.empty() ? "YouTube" : titleMatch;
     const std::string mode = siteMode == "mobile" ? "mobile" : "desktop";
     height = height > 0 ? std::clamp(height, kMinHeight, kMaxHeight) : kHeight;
@@ -1437,7 +1487,7 @@ void WebAppHost::open(const std::string& requestId, const std::string& url, cons
     {
         std::lock_guard lock(mutex_);
         // The same web app again (a reloaded screen): keep the browser, offer the links again
-        if (session_ && !session_->stopping && session_->titleMatch == match) {
+        if (session_ && !session_->stopping && session_->titleMatch == match && session_->incognito == incognito) {
             requestId_ = requestId;
             if (!url.empty()) openedUrl_ = url;
             auto s = session_;
@@ -1457,6 +1507,7 @@ void WebAppHost::open(const std::string& requestId, const std::string& url, cons
     s->fill = fill;
     s->press = press;
     s->mouse = mouse;
+    s->incognito = incognito;
     s->wantH = height;
     s->screen = std::move(screen);
     s->thread = std::thread([s]() { s->run(); });

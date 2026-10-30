@@ -322,7 +322,7 @@ void WebSocketSession::onMessage(const std::string& message) {
                                         {"error", "This app is locked."}}.dump());
                     return;
                 }
-                resourceManager_.webAppHost().open(reqId, url, json.value("titleMatch", ""), json.value("siteMode", ""), json.value("height", 0), json.value("chromeFirst", false), json.value("fill", ""), json.value("press", ""), json.value("pointer", "") == "mouse", std::move(sink));
+                resourceManager_.webAppHost().open(reqId, url, json.value("titleMatch", ""), json.value("siteMode", ""), json.value("height", 0), json.value("chromeFirst", false), json.value("fill", ""), json.value("press", ""), json.value("pointer", "") == "mouse", json.value("incognito", false), std::move(sink));
                 resourceManager_.webAppHost().picture(reqId, pictureCodec(json), json.value("textHint", true), false);
             } else {
                 Logger::instance().info("WebSocket", "Processing WEBAPP_SOUND_ATTACH: reqId='{}'", reqId);

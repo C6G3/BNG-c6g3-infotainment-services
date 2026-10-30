@@ -52,7 +52,8 @@ public:
     // chromeFirst: Chrome before Brave (Spotify: Widevine; Poki: Brave blocks the ad its games wait for)
     // press: a CSS selector whose button is pressed once it appears (Poki's Profile button), "" = none
     // mouse: a desktop game (GTA, Minecraft): taps go as the left mouse button, no touchscreen, the page kept focused
-    void open(const std::string& requestId, const std::string& url, const std::string& titleMatch, const std::string& siteMode, int height, bool chromeFirst, const std::string& fill, const std::string& press, bool mouse, Sink screen);
+    // incognito: a private session (the Chrome app): its own empty profile, deleted when it closes
+    void open(const std::string& requestId, const std::string& url, const std::string& titleMatch, const std::string& siteMode, int height, bool chromeFirst, const std::string& fill, const std::string& press, bool mouse, bool incognito, Sink screen);
     void attachSound(const std::string& requestId, Sink sound);
     void cast(const std::string& requestId, const std::string& screenName, bool on);
     void answer(const std::string& requestId, const std::string& to, const std::string& sdp);
