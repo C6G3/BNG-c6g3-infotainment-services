@@ -141,10 +141,38 @@ const char* kControllerScript = R"JS((() => {
   let capturing = null // one capture for both links (the two offers come together)
   let motionHint = false
   const pcs = {}
+  // The screen's Settings > Display (WEBAPP_OPEN / WEBAPP_PICTURE, __c6g3SetPicture): the codec put first for the
+  // picture (the others stay as fallbacks: the receiver picks) and the text hint ('text', else 'detail'). Default VP9
+  // + text: in a loopback of a Spotify page (2026-10-30) VP8 'detail' left 11.8 % of the dark panels' pixels 2+ levels
+  // off, VP9 'text' 2.5 %, and text edges cleaner too. The bus screen's bright emissive shows those small steps as a
+  // checkerboard of 16 px blocks
+  let codecPref = 'vp9'
+  let textHint = true
+  const CODEC_MIME = { vp9: 'video/VP9', h264: 'video/H264', vp8: 'video/VP8', av1: 'video/AV1' }
+  const hintNow = () => motionHint ? 'motion' : (textHint ? 'text' : 'detail')
   window.__c6g3Hint = (motion) => {
     motionHint = !!motion
     const v = stream && stream.getVideoTracks()[0]
-    if (v) v.contentHint = motionHint ? 'motion' : 'detail'
+    if (v) v.contentHint = hintNow()
+  }
+  const preferCodec = (pc, track) => {
+    const tr = pc.getTransceivers().find(t => t.sender.track === track)
+    const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities('video')
+    if (!tr || !tr.setCodecPreferences || !caps) return
+    const mime = CODEC_MIME[codecPref] || CODEC_MIME.vp9
+    let first = caps.codecs.filter(c => c.mimeType === mime)
+    if (mime === 'video/VP9') first = first.filter(c => !c.sdpFmtpLine || /profile-id=0/.test(c.sdpFmtpLine))
+    if (mime === 'video/H264') first.sort((a, b) => (/packetization-mode=1/.test(b.sdpFmtpLine || '') ? 1 : 0) - (/packetization-mode=1/.test(a.sdpFmtpLine || '') ? 1 : 0))
+    if (first.length) tr.setCodecPreferences([...first, ...caps.codecs.filter(c => !first.includes(c))])
+  }
+  // reoffer: a running app's picture links start again with a new codec (the hint applies at once)
+  window.__c6g3SetPicture = (codec, text, reoffer) => {
+    const changed = CODEC_MIME[codec] && codec !== codecPref
+    if (CODEC_MIME[codec]) codecPref = codec
+    textHint = !!text
+    const v = stream && stream.getVideoTracks()[0]
+    if (v) v.contentHint = hintNow()
+    if (reoffer && changed) for (const to of Object.keys(pcs)) if (to === 'screen' || to.startsWith('cast:')) window.__c6g3Offer(to)
   }
   const iceDone = (pc) => new Promise(res => {
     if (pc.iceGatheringState === 'complete') return res()
@@ -165,9 +193,10 @@ const char* kControllerScript = R"JS((() => {
     })
     const v = stream.getVideoTracks()[0]
     if (v) {
-      // 'detail' (screen content): still parts are sharpened over the next frames. 'motion' never went back to
-      // them, so gradients and flat areas stayed blocky; it is used only while a big video plays (__c6g3Hint)
-      v.contentHint = motionHint ? 'motion' : 'detail'
+      // 'text' (screen content, like 'detail'): still parts are sharpened over the next frames, and it measured a
+      // little cleaner than 'detail'. 'motion' never went back to them, so gradients and flat areas stayed blocky;
+      // it is used only while a big video plays (__c6g3Hint)
+      v.contentHint = hintNow()
       v.onended = () => { stream = null; capturing = null; send({ type: 'error', error: 'the capture of the web app ended' }) }
     }
     send({ type: 'state', state: 'captured', detail: JSON.stringify(v ? v.getSettings() : {}) + ' audio ' + stream.getAudioTracks().length })
@@ -184,6 +213,7 @@ const char* kControllerScript = R"JS((() => {
       const picture = to === 'screen' || to.startsWith('cast:') // 'cast:<screen>': a passenger screen
       const tracks = picture ? stream.getVideoTracks() : stream.getAudioTracks()
       for (const t of tracks) pc.addTrack(t, stream)
+      if (picture) for (const t of tracks) preferCodec(pc, t)
       if (picture) {
         for (const s of pc.getSenders()) {
           const p = s.getParameters(); p.encodings = p.encodings && p.encodings.length ? p.encodings : [{}]
@@ -664,6 +694,9 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
     bool motionHint = false; // a big video plays: the picture's encoder favours movement (__c6g3Hint)
     bool offeredScreen = false, offeredSound = false;
     std::map<std::string, bool> castScreens; // passenger screens with a picture link (true: waiting for its offer)
+    std::map<std::string, std::string> popups; // windows the app's page opened (targetId -> its last address)
+    std::string codec = "vp9"; // the picture's codec and text hint (the screen's Settings > Display, __c6g3SetPicture)
+    bool textHint = true;
     int pageW = kWidth, pageH = kHeight;
     int wantH = kHeight; // kWidth x wantH: the screen's own shape, so the site fills it with no bars
     int orphanChecks = 0;
@@ -816,8 +849,16 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
                 lastMedia = page["media"];
                 toScreen({{"event", "WEBAPP_STATE"}, {"state", "media"}, {"media", lastMedia}});
             }
+        } else if (method == "Target.targetCreated") {
+            // A window the app's page opened (a sign-in popup: Google, Apple): nobody sees it in the hidden browser,
+            // so its address goes to the screen (webAppStore: a sign-in page moves to the desktop window)
+            const json& info = p.contains("targetInfo") ? p["targetInfo"] : json::object();
+            if (appTargetId.empty() || info.value("type", "") != "page" || info.value("openerId", "") != appTargetId) return;
+            popups[info.value("targetId", "")] = "";
+            reportPopup(info);
         } else if (method == "Target.targetInfoChanged") {
             const json& info = p.contains("targetInfo") ? p["targetInfo"] : json::object();
+            if (popups.count(info.value("targetId", ""))) return reportPopup(info);
             if (info.value("targetId", "") != appTargetId) return;
             const std::string title = info.value("title", ""), u = info.value("url", "");
             if (title == lastTitle && u == lastUrl) return;
@@ -825,11 +866,35 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
             lastUrl = u;
             toScreen({{"event", "WEBAPP_STATE"}, {"state", "page"}, {"title", title}, {"url", u}, {"browser", browser.name}});
         } else if (method == "Target.targetDestroyed") {
+            // A popup that closed itself (already signed in): the screen stops waiting on it
+            if (popups.erase(p.value("targetId", "")))
+                toScreen({{"event", "WEBAPP_STATE"}, {"state", "popup"}, {"url", ""}});
             if (p.value("targetId", "") == appTargetId && !stopping) {
                 error("the web app's tab closed");
                 ioc.stop();
             }
         }
+    }
+
+    // The picture's codec and text hint to the controller page (reoffer: the running links start again with a new codec)
+    void applyPicture(bool reoffer) {
+        if (!ctlReady) return; // applied when the controller says it is ready
+        evaluate(ctlSession, "window.__c6g3SetPicture && window.__c6g3SetPicture(" + dumpJson(codec) + ", " +
+                             (textHint ? "true" : "false") + ", " + (reoffer ? "true" : "false") + ")");
+    }
+    void setPicture(const std::string& newCodec, bool newTextHint, bool reoffer) {
+        if (!newCodec.empty()) codec = newCodec;
+        textHint = newTextHint;
+        Logger::instance().info("WebAppHost", "'{}': picture codec {}, text hint {}", requestId, codec, textHint ? "on" : "off");
+        applyPicture(reoffer);
+    }
+
+    void reportPopup(const json& info) {
+        const std::string id = info.value("targetId", ""), u = info.value("url", "");
+        if (u.empty() || u == "about:blank" || popups[id] == u) return;
+        popups[id] = u;
+        Logger::instance().info("WebAppHost", "The app's page opened a window: {}", u);
+        toScreen({{"event", "WEBAPP_STATE"}, {"state", "popup"}, {"url", u}});
     }
 
     void onSignal(const std::string& payload) {
@@ -850,6 +915,7 @@ struct WebAppHost::Session : std::enable_shared_from_this<WebAppHost::Session> {
             const std::string st = s.value("state", "");
             if (st == "controller-ready") {
                 ctlReady = true;
+                applyPicture(false);
                 if (motionHint) evaluate(ctlSession, "window.__c6g3Hint(true)");
                 maybeOffer();
             }
@@ -1446,6 +1512,14 @@ void WebAppHost::navigate(const std::string& requestId, const std::string& actio
     });
 }
 
+void WebAppHost::picture(const std::string& requestId, const std::string& codec, bool textHint, bool reoffer) {
+    auto s = current(requestId);
+    if (!s) return;
+    net::post(s->ioc, [s, requestId, codec, textHint, reoffer]() {
+        if (s->requestId == requestId) s->setPicture(codec, textHint, reoffer);
+    });
+}
+
 void WebAppHost::close(const std::string& requestId) {
     std::shared_ptr<Session> s;
     {
@@ -1486,7 +1560,56 @@ bool WebAppHost::desktopWindowOpen() {
     return false;
 }
 
-std::string WebAppHost::openOnDesktop(const std::string& url, bool chromeFirst) {
+#if defined(_WIN32)
+namespace {
+struct BrowserWindowSearch {
+    DWORD pid;
+    HWND hwnd;
+};
+
+BOOL CALLBACK findBrowserWindow(HWND h, LPARAM lp) {
+    auto* f = reinterpret_cast<BrowserWindowSearch*>(lp);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (pid != f->pid || !IsWindowVisible(h) || GetWindow(h, GW_OWNER) || GetWindowTextLengthW(h) == 0) return TRUE;
+    wchar_t cls[64]{};
+    GetClassNameW(h, cls, 64);
+    if (wcscmp(cls, L"Chrome_WidgetWin_1") != 0) return TRUE; // Chrome, Edge and Brave's browser windows
+    f->hwnd = h;
+    return FALSE;
+}
+
+// A window in front of the game (user, 2026-10-30). Windows does not let a program in the background take the
+// foreground; for the switch this thread shares the foreground window's input (the game's), and if that is still
+// refused, SwitchToThisWindow. True: it is in front
+bool focusWindow(HWND hwnd) {
+    HWND fg = GetForegroundWindow();
+    const DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    const DWORD me = GetCurrentThreadId();
+    const bool attached = fgThread && fgThread != me && AttachThreadInput(me, fgThread, TRUE);
+    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    if (attached) AttachThreadInput(me, fgThread, FALSE);
+    if (GetForegroundWindow() != hwnd) SwitchToThisWindow(hwnd, TRUE);
+    return GetForegroundWindow() == hwnd;
+}
+
+// The desktop window of the web apps' browser (its process). Waits up to 10 s for the window
+bool bringToFront(DWORD pid) {
+    BrowserWindowSearch f{pid, nullptr};
+    for (int i = 0; i < 100 && !f.hwnd; i++) {
+        EnumWindows(findBrowserWindow, reinterpret_cast<LPARAM>(&f));
+        if (!f.hwnd) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return f.hwnd && focusWindow(f.hwnd);
+}
+
+} // namespace
+#endif
+
+std::string WebAppHost::openOnDesktop(const std::string& url, bool chromeFirst, bool* focused) {
+    if (focused) *focused = false;
 #if defined(_WIN32)
     if (desktopWindowOpen()) return "The browser window is already open on your desktop.";
     closeAll();
@@ -1511,9 +1634,13 @@ std::string WebAppHost::openOnDesktop(const std::string& url, bool chromeFirst) 
     if (!CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si, &pi))
         return "The browser could not be started (error " + std::to_string(GetLastError()) + ")";
     CloseHandle(pi.hThread);
-    Logger::instance().info("WebAppHost", "Opened {} on the desktop: {}", browser.name, url);
-    std::lock_guard lock(mutex_);
-    desktopProcess_ = pi.hProcess;
+    {
+        std::lock_guard lock(mutex_);
+        desktopProcess_ = pi.hProcess;
+    }
+    const bool front = bringToFront(pi.dwProcessId);
+    if (focused) *focused = front;
+    Logger::instance().info("WebAppHost", "Opened {} on the desktop{}: {}", browser.name, front ? " (in front)" : " (not in front)", url);
     return "";
 #else
     (void)url; (void)chromeFirst;

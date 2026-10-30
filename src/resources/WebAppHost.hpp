@@ -58,6 +58,8 @@ public:
     void answer(const std::string& requestId, const std::string& to, const std::string& sdp);
     void input(const std::string& requestId, const std::string& inputJson);
     void navigate(const std::string& requestId, const std::string& action, const std::string& url);
+    // The picture's codec ("vp9", "h264", "vp8", "av1") and text hint; reoffer: a running app's links start again
+    void picture(const std::string& requestId, const std::string& codec, bool textHint, bool reoffer);
     void close(const std::string& requestId);
     // The app lock's reset: the web app closes (its browser too), so its profile can be deleted
     void closeAll();
@@ -66,7 +68,7 @@ public:
     // A visible window of the web apps' browser with their profile, on the user's desktop (the web app closes first:
     // the profile is one browser's at a time). Signing in there counts for the web apps; Google refuses its sign-in
     // in a browser a program controls, as the hidden one is. "" = opened, else why not
-    std::string openOnDesktop(const std::string& url, bool chromeFirst);
+    std::string openOnDesktop(const std::string& url, bool chromeFirst, bool* focused = nullptr);
     // That window is still open: no web app can start until it is closed (it holds the profile)
     bool desktopWindowOpen();
 

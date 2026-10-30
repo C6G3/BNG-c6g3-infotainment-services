@@ -133,6 +133,8 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/config ${DIST_DIR}/config
+        COMMAND ${CMAKE_COMMAND} -DCONFIG=${DIST_DIR}/config/config.default.json -DLEVEL=INFO
+            -P ${CMAKE_SOURCE_DIR}/cmake/SetDistLogLevel.cmake
         COMMAND ${CMAKE_COMMAND}
             -DEXE=$<TARGET_FILE:${PROJECT_NAME}>
             -DDEST=${DIST_DIR}
@@ -149,6 +151,8 @@ else()
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/config ${DIST_DIR}/config
+        COMMAND ${CMAKE_COMMAND} -DCONFIG=${DIST_DIR}/config/config.default.json -DLEVEL=INFO
+            -P ${CMAKE_SOURCE_DIR}/cmake/SetDistLogLevel.cmake
         COMMENT "Bundling standalone distribution in dist/${PROJECT_NAME}"
         DEPENDS ${PROJECT_NAME}
     )

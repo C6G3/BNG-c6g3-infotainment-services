@@ -40,6 +40,12 @@ bool deleteWebAppProfiles() {
     }
     return ok;
 }
+
+// The web app picture's codec from the screen (Settings > Display): one of the known ones, else VP9 (the default)
+std::string pictureCodec(const nlohmann::json& j) {
+    const std::string c = j.value("codec", "");
+    return (c == "vp9" || c == "h264" || c == "vp8" || c == "av1") ? c : "vp9";
+}
 } // namespace
 
 WebSocketSession::WebSocketSession(net::ip::tcp::socket socket,
@@ -317,6 +323,7 @@ void WebSocketSession::onMessage(const std::string& message) {
                     return;
                 }
                 resourceManager_.webAppHost().open(reqId, url, json.value("titleMatch", ""), json.value("siteMode", ""), json.value("height", 0), json.value("chromeFirst", false), json.value("fill", ""), json.value("press", ""), json.value("pointer", "") == "mouse", std::move(sink));
+                resourceManager_.webAppHost().picture(reqId, pictureCodec(json), json.value("textHint", true), false);
             } else {
                 Logger::instance().info("WebSocket", "Processing WEBAPP_SOUND_ATTACH: reqId='{}'", reqId);
                 resourceManager_.webAppHost().attachSound(reqId, std::move(sink));
@@ -387,21 +394,33 @@ void WebSocketSession::onMessage(const std::string& message) {
 
         } else if (action == "WEBAPP_DESKTOP") {
             // A visible window of the web apps' browser on the desktop (signing in where the hidden browser is refused:
-            // Google). Closing the running web app waits for its browser, so off this connection's thread
+            // Google, Spotify). Closing the running web app waits for its browser, so off this connection's thread.
+            // A locked app's site only while that app runs (it was unlocked to open): its sign-in page moved here.
+            // Discord's invite links always: the launcher's Discord tile opens the invite here (Discord itself no
+            // longer runs in the vehicle, 2026-10-30), and Discord was locked by default
             const std::string reqId = json.value("requestId", "");
             const std::string url = json.value("url", "");
             const bool chromeFirst = json.value("chromeFirst", false);
             ResourceManager& rm = resourceManager_;
-            if (url.rfind("https://", 0) != 0 || rm.appLock().isLockedUrl(url)) {
+            const std::string running = rm.webAppHost().runningUrl();
+            const bool invite = url.rfind("https://discord.gg/", 0) == 0 || url.rfind("https://discord.com/invite/", 0) == 0;
+            const bool locked = !invite && rm.appLock().isLockedUrl(url) &&
+                                !(!running.empty() && AppLock::appIdForUrl(running) == AppLock::appIdForUrl(url));
+            if (url.rfind("https://", 0) != 0 || locked) {
                 send(nlohmann::json{{"event", "WEBAPP_DESKTOP_RESULT"}, {"requestId", reqId}, {"ok", false}, {"error", "Not allowed"}}.dump());
                 return;
             }
             rm.runAsync([&rm, reqId, url, chromeFirst, weakSelf = weak_from_this()]() {
-                const std::string error = rm.webAppHost().openOnDesktop(url, chromeFirst);
-                nlohmann::json r{{"event", "WEBAPP_DESKTOP_RESULT"}, {"requestId", reqId}, {"ok", error.empty()}};
+                bool focused = false;
+                const std::string error = rm.webAppHost().openOnDesktop(url, chromeFirst, &focused);
+                nlohmann::json r{{"event", "WEBAPP_DESKTOP_RESULT"}, {"requestId", reqId}, {"ok", error.empty()}, {"focused", focused}};
                 if (!error.empty()) r["error"] = error;
                 if (auto self = weakSelf.lock()) self->send(r.dump());
             });
+
+        } else if (action == "WEBAPP_PICTURE") {
+            // Settings > Display changed while the app runs: a new codec starts its picture links again
+            resourceManager_.webAppHost().picture(json.value("requestId", ""), pictureCodec(json), json.value("textHint", true), true);
 
         } else if (action == "WEBAPP_CAST") {
             resourceManager_.webAppHost().cast(json.value("requestId", ""), json.value("screen", ""), json.value("on", false));
